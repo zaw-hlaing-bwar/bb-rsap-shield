@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rasp-shield.local/schemas/signing-request.schema.json",
+  "title": "RASP Shield External Signing Request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "request_type",
+    "original_apk",
+    "unsigned_apk",
+    "payload",
+    "signing",
+    "generated_by",
+    "instructions"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "request_type": { "const": "ANDROID_APK_EXTERNAL_SIGNING" },
+    "original_apk": { "$ref": "#/$defs/artifact" },
+    "unsigned_apk": { "$ref": "#/$defs/artifact" },
+    "payload": { "$ref": "#/$defs/payload" },
+    "signing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["expected_certificate_sha256", "preserve_signature_lineage"],
+      "properties": {
+        "expected_certificate_sha256": {
+          "type": "string",
+          "pattern": "^[0-9A-Fa-f]{64}$"
+        },
+        "preserve_signature_lineage": { "type": "boolean" }
+      }
+    },
+    "generated_by": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version"],
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": "string" }
+      }
+    },
+    "instructions": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  },
+  "$defs": {
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "size_bytes"],
+      "properties": {
+        "path": { "type": "string" },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "size_bytes": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "bootstrap_dex_entry",
+        "native_library_entries"
+      ],
+      "properties": {
+        "version": { "type": "string" },
+        "bootstrap_dex_entry": { "type": "string" },
+        "native_library_entries": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    }
+  }
+}

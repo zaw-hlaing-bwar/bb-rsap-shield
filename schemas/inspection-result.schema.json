@@ -1,0 +1,199 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rasp-shield.local/schemas/inspection-result.schema.json",
+  "title": "RASP Shield Inspection Result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "artifact_type",
+    "path",
+    "size_bytes",
+    "sha256",
+    "package_name",
+    "version_name",
+    "version_code",
+    "min_sdk",
+    "target_sdk",
+    "supported_abis",
+    "dex_files",
+    "native_libraries",
+    "flutter",
+    "react_native_engine",
+    "javascript_bundle_path",
+    "application_class",
+    "extract_native_libs",
+    "main_activity",
+    "content_providers",
+    "detected_signature_schemes",
+    "signature_certificates",
+    "signature_entries",
+    "apk_compression",
+    "existing_security_products",
+    "compatibility_warnings",
+    "warnings"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "artifact_type": {
+      "type": "string",
+      "enum": ["APK", "AAB", "IPA", "XCARCHIVE", "UNKNOWN"]
+    },
+    "path": { "type": "string", "minLength": 1 },
+    "size_bytes": { "type": "integer", "minimum": 0 },
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "package_name": {
+      "type": ["string", "null"],
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)+$"
+    },
+    "version_name": { "type": ["string", "null"] },
+    "version_code": { "type": ["integer", "null"], "minimum": 0 },
+    "min_sdk": { "type": ["integer", "null"], "minimum": 1 },
+    "target_sdk": { "type": ["integer", "null"], "minimum": 1 },
+    "supported_abis": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "dex_files": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/dex_file" }
+    },
+    "native_libraries": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/native_library" }
+    },
+    "flutter": {
+      "anyOf": [{ "$ref": "#/$defs/flutter_info" }, { "type": "null" }]
+    },
+    "react_native_engine": {
+      "type": ["string", "null"],
+      "enum": ["HERMES", "JAVA_SCRIPT_CORE", "UNKNOWN_REACT_NATIVE", null]
+    },
+    "javascript_bundle_path": { "type": ["string", "null"] },
+    "application_class": { "type": ["string", "null"] },
+    "extract_native_libs": { "type": ["boolean", "null"] },
+    "main_activity": { "type": ["string", "null"] },
+    "content_providers": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/content_provider" }
+    },
+    "detected_signature_schemes": {
+      "type": "array",
+      "items": { "type": "string", "enum": ["V1_JAR", "V2", "V3"] }
+    },
+    "signature_certificates": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/signature_certificate" }
+    },
+    "signature_entries": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "apk_compression": { "$ref": "#/$defs/apk_compression" },
+    "existing_security_products": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "compatibility_warnings": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "warnings": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  },
+  "$defs": {
+    "dex_file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "size_bytes", "compressed"],
+      "properties": {
+        "path": { "type": "string" },
+        "size_bytes": { "type": "integer", "minimum": 0 },
+        "compressed": { "type": "boolean" }
+      }
+    },
+    "native_library": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "abi", "name", "size_bytes", "compressed"],
+      "properties": {
+        "path": { "type": "string" },
+        "abi": { "type": "string" },
+        "name": { "type": "string" },
+        "size_bytes": { "type": "integer", "minimum": 0 },
+        "compressed": { "type": "boolean" }
+      }
+    },
+    "flutter_info": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["detected", "app_libraries", "engine_libraries", "asset_entries"],
+      "properties": {
+        "detected": { "const": true },
+        "app_libraries": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "engine_libraries": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "asset_entries": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "content_provider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "authorities", "exported"],
+      "properties": {
+        "name": { "type": ["string", "null"] },
+        "authorities": { "type": ["string", "null"] },
+        "exported": { "type": ["boolean", "null"] }
+      }
+    },
+    "signature_certificate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sha256", "schemes", "size_bytes"],
+      "properties": {
+        "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "schemes": {
+          "type": "array",
+          "items": { "type": "string", "enum": ["V1_JAR", "V2", "V3"] }
+        },
+        "size_bytes": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "apk_compression": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "total_entries",
+        "compressed_entries",
+        "stored_entries",
+        "duplicate_paths",
+        "zip_slip_paths",
+        "total_uncompressed_bytes"
+      ],
+      "properties": {
+        "total_entries": { "type": "integer", "minimum": 0 },
+        "compressed_entries": { "type": "integer", "minimum": 0 },
+        "stored_entries": { "type": "integer", "minimum": 0 },
+        "duplicate_paths": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "zip_slip_paths": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "total_uncompressed_bytes": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

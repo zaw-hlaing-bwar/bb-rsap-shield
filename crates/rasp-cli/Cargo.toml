@@ -1,0 +1,26 @@
+[package]
+name = "rasp-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "rasp-cli"
+path = "src/main.rs"
+
+[dependencies]
+android-apk = { path = "../android-apk" }
+android-signing = { path = "../android-signing" }
+artifact-inspector = { path = "../artifact-inspector" }
+clap.workspace = true
+payload-pack = { path = "../payload-pack" }
+rasp-config = { path = "../rasp-config" }
+rasp-core = { path = "../rasp-core" }
+rasp-report = { path = "../rasp-report" }
+runtime-test = { path = "../runtime-test" }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+zip.workspace = true

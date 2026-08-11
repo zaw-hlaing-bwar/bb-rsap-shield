@@ -1,0 +1,264 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rasp-shield.local/schemas/integrity-manifest.schema.json",
+  "title": "RASP Shield Android Integrity Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "manifest_type",
+    "build_id",
+    "package_name",
+    "application",
+    "policy",
+    "android",
+    "provider",
+    "payload",
+    "protected_assets",
+    "generated_by"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "manifest_type": {
+      "const": "RASP_SHIELD_ANDROID_INTEGRITY"
+    },
+    "build_id": {
+      "$ref": "#/$defs/sha256"
+    },
+    "package_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "application": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["profile", "build_environment", "expected_package_name"],
+      "properties": {
+        "profile": {
+          "type": "string",
+          "minLength": 1
+        },
+        "build_environment": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expected_package_name": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["digest_sha256"],
+      "properties": {
+        "digest_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "runtime": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["thresholds", "runtime_high_risk_action"],
+          "properties": {
+            "thresholds": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["report", "warn", "restrict", "terminate"],
+              "properties": {
+                "report": {
+                  "$ref": "#/$defs/risk_score"
+                },
+                "warn": {
+                  "$ref": "#/$defs/risk_score"
+                },
+                "restrict": {
+                  "$ref": "#/$defs/risk_score"
+                },
+                "terminate": {
+                  "$ref": "#/$defs/risk_score"
+                }
+              }
+            },
+            "runtime_high_risk_action": {
+              "$ref": "#/$defs/risk_action"
+            },
+            "startup_integrity_action": {
+              "$ref": "#/$defs/risk_action"
+            },
+            "startup_payload_tampering_action": {
+              "$ref": "#/$defs/risk_action"
+            },
+            "monitoring": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "enabled",
+                "scan_interval_minimum_ms",
+                "scan_interval_maximum_ms",
+                "deep_scan_on_suspicion",
+                "monitor_background_state"
+              ],
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "scan_interval_minimum_ms": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "scan_interval_maximum_ms": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "deep_scan_on_suspicion": {
+                  "type": "boolean"
+                },
+                "monitor_background_state": {
+                  "type": "boolean"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "android": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["expected_certificate_sha256"],
+      "properties": {
+        "expected_certificate_sha256": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/sha256"
+          }
+        }
+      }
+    },
+    "provider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "authorities", "exported", "init_order"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "authorities": {
+          "type": "string",
+          "minLength": 1
+        },
+        "exported": {
+          "const": false
+        },
+        "init_order": {
+          "type": ["integer", "null"]
+        }
+      }
+    },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "files"],
+      "properties": {
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "files": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "$ref": "#/$defs/sha256"
+          }
+        }
+      }
+    },
+    "protected_assets": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "sha256", "kind"],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sha256": {
+            "$ref": "#/$defs/sha256"
+          },
+          "kind": {
+            "enum": [
+              "BOOTSTRAP_DEX",
+              "NATIVE_LIBRARY",
+              "JAVASCRIPT_BUNDLE",
+              "FLUTTER_ASSET",
+              "FLUTTER_NATIVE_LIBRARY"
+            ]
+          }
+        }
+      }
+    },
+    "apk_inventory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "entry_count",
+        "entry_set_sha256",
+        "executable_entry_count",
+        "executable_entry_set_sha256"
+      ],
+      "properties": {
+        "entry_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "entry_set_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "executable_entry_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "executable_entry_set_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "generated_by": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[A-Fa-f0-9]{64}$"
+    },
+    "risk_score": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100
+    },
+    "risk_action": {
+      "enum": ["ALLOW", "REPORT", "WARN", "LOCK_STARTUP", "TERMINATE"]
+    }
+  }
+}

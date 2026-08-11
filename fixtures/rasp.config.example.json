@@ -1,0 +1,102 @@
+{
+  "schema_version": 1,
+  "application": {
+    "profile": "banking-strict",
+    "expected_package_name": "com.example.mobile",
+    "build_environment": "production"
+  },
+  "protections": {
+    "application_signature": {
+      "enabled": true,
+      "weight": 100
+    },
+    "payload_integrity": {
+      "enabled": true,
+      "weight": 100
+    },
+    "javascript_bundle_integrity": {
+      "enabled": true,
+      "weight": 80,
+      "paths": [
+        "assets/index.android.bundle"
+      ]
+    },
+    "flutter_integrity": {
+      "enabled": false,
+      "weight": 80,
+      "paths": []
+    },
+    "debugger_detection": {
+      "enabled": true,
+      "weight": 40
+    },
+    "instrumentation_detection": {
+      "enabled": true,
+      "weight": 60
+    },
+    "memory_integrity": {
+      "enabled": true,
+      "weight": 60
+    },
+    "root_detection": {
+      "enabled": true,
+      "weight": 20
+    },
+    "emulator_detection": {
+      "enabled": false,
+      "weight": 10
+    }
+  },
+  "risk_policy": {
+    "thresholds": {
+      "report": 20,
+      "warn": 40,
+      "restrict": 70,
+      "terminate": 100
+    },
+    "startup_signature_mismatch": "TERMINATE",
+    "startup_payload_tampering": "TERMINATE",
+    "runtime_high_risk": "REPORT",
+    "offline_behavior": "CONTINUE_WITH_LOCAL_POLICY"
+  },
+  "runtime": {
+    "startup_budget_ms": 50,
+    "monitoring_enabled": true,
+    "scan_interval_ms": {
+      "minimum": 5000,
+      "maximum": 15000
+    },
+    "deep_scan_on_suspicion": true,
+    "monitor_background_state": false
+  },
+  "android": {
+    "initializer": "CONTENT_PROVIDER",
+    "supported_abis": [
+      "arm64-v8a",
+      "armeabi-v7a"
+    ],
+    "initialize_processes": [
+      "main"
+    ],
+    "minimum_sdk": 23,
+    "certificate_sha256": [
+      "CURRENT_SIGNING_CERTIFICATE_SHA256"
+    ],
+    "preserve_signature_lineage": false
+  },
+  "telemetry": {
+    "enabled": false,
+    "endpoint": null,
+    "connect_timeout_ms": 3000,
+    "request_timeout_ms": 5000,
+    "include_device_identifiers": false,
+    "include_raw_memory": false,
+    "queue_capacity": 100
+  },
+  "output": {
+    "generate_report": true,
+    "generate_sbom": true,
+    "preserve_timestamps": false,
+    "fail_on_warning": false
+  }
+}

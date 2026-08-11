@@ -1,0 +1,16 @@
+[package]
+name = "artifact-inspector"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+android-apk = { path = "../android-apk" }
+android-axml = { path = "../android-axml" }
+rasp-core = { path = "../rasp-core" }
+serde.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+zip.workspace = true

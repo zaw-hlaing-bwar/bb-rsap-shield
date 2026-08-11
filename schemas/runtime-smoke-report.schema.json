@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rasp-shield.local/schemas/runtime-smoke-report.schema.json",
+  "title": "RASP Shield Runtime Smoke Test Report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "result",
+    "apk_path",
+    "package_name",
+    "launch_activity",
+    "device_serial",
+    "steps",
+    "warnings"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "result": {
+      "enum": ["PASS", "FAIL"]
+    },
+    "apk_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "package_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "launch_activity": {
+      "type": ["string", "null"]
+    },
+    "device_serial": {
+      "type": ["string", "null"]
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "result", "detail"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "result": {
+            "enum": ["PASS", "FAIL"]
+          },
+          "detail": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

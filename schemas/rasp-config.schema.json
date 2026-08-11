@@ -1,0 +1,198 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rasp-shield.local/schemas/rasp-config.schema.json",
+  "title": "RASP Shield Configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "application",
+    "protections",
+    "risk_policy",
+    "runtime",
+    "android"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "application": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["profile", "expected_package_name", "build_environment"],
+      "properties": {
+        "profile": { "type": "string", "minLength": 1 },
+        "expected_package_name": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)+$"
+        },
+        "build_environment": { "type": "string", "minLength": 1 }
+      }
+    },
+    "protections": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "application_signature": { "$ref": "#/$defs/protection_rule" },
+        "payload_integrity": { "$ref": "#/$defs/protection_rule" },
+        "javascript_bundle_integrity": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean", "default": false },
+            "weight": { "type": "integer", "minimum": 0, "maximum": 100, "default": 0 },
+            "paths": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 },
+              "default": []
+            }
+          }
+        },
+        "flutter_integrity": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean", "default": false },
+            "weight": { "type": "integer", "minimum": 0, "maximum": 100, "default": 0 },
+            "paths": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 },
+              "default": []
+            }
+          }
+        },
+        "debugger_detection": { "$ref": "#/$defs/protection_rule" },
+        "instrumentation_detection": { "$ref": "#/$defs/protection_rule" },
+        "memory_integrity": { "$ref": "#/$defs/protection_rule" },
+        "root_detection": { "$ref": "#/$defs/protection_rule" },
+        "emulator_detection": { "$ref": "#/$defs/protection_rule" }
+      }
+    },
+    "risk_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "thresholds",
+        "startup_signature_mismatch",
+        "startup_payload_tampering",
+        "runtime_high_risk",
+        "offline_behavior"
+      ],
+      "properties": {
+        "thresholds": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["report", "warn", "restrict", "terminate"],
+          "properties": {
+            "report": { "type": "integer", "minimum": 0, "maximum": 100 },
+            "warn": { "type": "integer", "minimum": 0, "maximum": 100 },
+            "restrict": { "type": "integer", "minimum": 0, "maximum": 100 },
+            "terminate": { "type": "integer", "minimum": 0, "maximum": 100 }
+          }
+        },
+        "startup_signature_mismatch": { "$ref": "#/$defs/risk_action" },
+        "startup_payload_tampering": { "$ref": "#/$defs/risk_action" },
+        "runtime_high_risk": { "$ref": "#/$defs/risk_action" },
+        "offline_behavior": {
+          "type": "string",
+          "enum": ["CONTINUE_WITH_LOCAL_POLICY", "FAIL_CLOSED"]
+        }
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "startup_budget_ms",
+        "monitoring_enabled",
+        "scan_interval_ms",
+        "deep_scan_on_suspicion",
+        "monitor_background_state"
+      ],
+      "properties": {
+        "startup_budget_ms": { "type": "integer", "minimum": 1 },
+        "monitoring_enabled": { "type": "boolean" },
+        "scan_interval_ms": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["minimum", "maximum"],
+          "properties": {
+            "minimum": { "type": "integer", "minimum": 1 },
+            "maximum": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "deep_scan_on_suspicion": { "type": "boolean" },
+        "monitor_background_state": { "type": "boolean" }
+      }
+    },
+    "android": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "initializer",
+        "supported_abis",
+        "initialize_processes",
+        "minimum_sdk",
+        "certificate_sha256"
+      ],
+      "properties": {
+        "initializer": { "const": "CONTENT_PROVIDER" },
+        "supported_abis": {
+          "type": "array",
+          "items": { "type": "string", "enum": ["arm64-v8a", "armeabi-v7a", "x86_64"] }
+        },
+        "initialize_processes": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "minimum_sdk": { "type": "integer", "minimum": 23 },
+        "certificate_sha256": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "pattern": "^(CURRENT_SIGNING_CERTIFICATE_SHA256|[A-Fa-f0-9]{64})$"
+          }
+        },
+        "preserve_signature_lineage": { "type": "boolean", "default": false }
+      }
+    },
+    "telemetry": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": false },
+        "endpoint": { "type": ["string", "null"] },
+        "connect_timeout_ms": { "type": "integer", "minimum": 1, "default": 3000 },
+        "request_timeout_ms": { "type": "integer", "minimum": 1, "default": 5000 },
+        "include_device_identifiers": { "type": "boolean", "default": false },
+        "include_raw_memory": { "const": false },
+        "queue_capacity": { "type": "integer", "minimum": 1, "default": 100 }
+      }
+    },
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "generate_report": { "type": "boolean", "default": true },
+        "generate_sbom": { "type": "boolean", "default": true },
+        "preserve_timestamps": { "type": "boolean", "default": false },
+        "fail_on_warning": { "type": "boolean", "default": false }
+      }
+    }
+  },
+  "$defs": {
+    "protection_rule": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": false },
+        "weight": { "type": "integer", "minimum": 0, "maximum": 100, "default": 0 }
+      }
+    },
+    "risk_action": {
+      "type": "string",
+      "enum": ["ALLOW", "REPORT", "WARN", "LOCK_STARTUP", "TERMINATE"]
+    }
+  }
+}

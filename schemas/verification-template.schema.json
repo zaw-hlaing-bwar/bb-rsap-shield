@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rasp-shield.local/schemas/verification-template.schema.json",
+  "title": "RASP Shield Verification Template",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "signed_apk",
+    "unsigned_apk",
+    "expected_certificate_sha256",
+    "expected_payload",
+    "checks"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "signed_apk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": { "type": "string" },
+        "sha256": {
+          "anyOf": [
+            { "type": "null" },
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          ]
+        }
+      }
+    },
+    "unsigned_apk": { "$ref": "#/$defs/artifact" },
+    "expected_certificate_sha256": {
+      "type": "string",
+      "pattern": "^[0-9A-Fa-f]{64}$"
+    },
+    "expected_payload": { "$ref": "#/$defs/payload" },
+    "checks": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  },
+  "$defs": {
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "size_bytes"],
+      "properties": {
+        "path": { "type": "string" },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "size_bytes": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "bootstrap_dex_entry",
+        "native_library_entries"
+      ],
+      "properties": {
+        "version": { "type": "string" },
+        "bootstrap_dex_entry": { "type": "string" },
+        "native_library_entries": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    }
+  }
+}

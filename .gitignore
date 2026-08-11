@@ -1,0 +1,14 @@
+/target/
+/tmp/
+/.codex/rust/
+/.idea/
+/.vscode/
+.DS_Store
+*.apk
+*.aab
+*.keystore
+*.jks
+*.p12
+*.pem
+*.key
+*.log

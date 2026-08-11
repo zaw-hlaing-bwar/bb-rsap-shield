@@ -1,0 +1,16 @@
+[package]
+name = "android-apk"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+android-axml = { path = "../android-axml" }
+android-dex = { path = "../android-dex" }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+zip.workspace = true
