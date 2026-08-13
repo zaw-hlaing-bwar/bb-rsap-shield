@@ -29,9 +29,10 @@ Gradle, Metro, Flutter, Play signing, or your release pipeline.
   `assets/rasp-shield/integrity-manifest.json`.
 - Runtime detection MVP: debugger attachment, Frida/Gum indicators, Frida ports
   and sockets, Xposed/LSPosed/EdXposed, Substrate, Zygisk/Riru/Magisk traces,
-  suspicious writable/executable mappings, hook-related environment variables,
-  native hook frameworks such as Dobby, ShadowHook, xHook, Whale, HookZz, and
-  libhooker, plus native runtime self-checksum monitoring.
+  root indicators, emulator indicators, suspicious writable/executable mappings,
+  hook-related environment variables, native hook frameworks such as Dobby,
+  ShadowHook, xHook, Whale, HookZz, and libhooker, plus native runtime
+  self-checksum monitoring.
 - Integrity checks: startup package/certificate validation, startup payload
   self-integrity, bounded startup hashing for small protected JavaScript assets,
   deferred monitor hashing for larger JavaScript and Flutter assets, and APK
@@ -487,8 +488,8 @@ Most protection entries use this shape:
 | `debugger_detection` | Runtime debugger detection policy weight. |
 | `instrumentation_detection` | Runtime hook/instrumentation detection policy weight. |
 | `memory_integrity` | Runtime memory-integrity policy weight. |
-| `root_detection` | Accepted policy field for root-detection weighting. The current native MVP focuses on instrumentation/debugger/memory signals. |
-| `emulator_detection` | Accepted policy field for emulator-detection weighting. The current native MVP focuses on instrumentation/debugger/memory signals. |
+| `root_detection` | Enables root-risk checks for `su`/Superuser artifacts, Magisk paths, risky Android system properties, untrusted verified-boot state, unlocked bootloader state, and writable system partitions. |
+| `emulator_detection` | Enables emulator-risk checks for QEMU/Goldfish/Ranchu files, Android system properties, Java `Build` fingerprints, and CPU info indicators. |
 
 ### `risk_policy`
 

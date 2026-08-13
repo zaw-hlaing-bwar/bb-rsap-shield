@@ -8,8 +8,8 @@
 extern "C" {
 #endif
 
-#define RASP_SECURITY_DETECTOR_VERSION 1U
-#define RASP_SECURITY_MAX_SIGNALS 16U
+#define RASP_SECURITY_DETECTOR_VERSION 2U
+#define RASP_SECURITY_MAX_SIGNALS 32U
 #define RASP_SECURITY_SIGNAL_ID_SIZE 64U
 #define RASP_SECURITY_SIGNAL_CATEGORY_SIZE 32U
 #define RASP_SECURITY_SIGNAL_EVIDENCE_SIZE 128U
@@ -32,6 +32,10 @@ typedef struct RaspSecurityPolicy {
   RaspSecurityAction runtime_high_risk_action;
   RaspSecurityAction startup_integrity_action;
   RaspSecurityAction startup_payload_tampering_action;
+  uint8_t root_detection_enabled;
+  uint8_t root_detection_weight;
+  uint8_t emulator_detection_enabled;
+  uint8_t emulator_detection_weight;
 } RaspSecurityPolicy;
 
 typedef struct RaspSecuritySignal {
@@ -80,6 +84,18 @@ int rasp_security_test_scan_tcp_text(const char *text, RaspSecurityReport *repor
 int rasp_security_test_scan_unix_text(const char *text, RaspSecurityReport *report);
 int rasp_security_test_scan_environment_text(const char *text,
                                              RaspSecurityReport *report);
+int rasp_security_test_scan_root_paths_text(const char *text,
+                                            RaspSecurityReport *report);
+int rasp_security_test_scan_root_properties_text(const char *text,
+                                                 RaspSecurityReport *report);
+int rasp_security_test_scan_root_mounts_text(const char *text,
+                                             RaspSecurityReport *report);
+int rasp_security_test_scan_emulator_build_text(const char *text,
+                                                RaspSecurityReport *report);
+int rasp_security_test_scan_emulator_properties_text(
+    const char *text, RaspSecurityReport *report);
+int rasp_security_test_scan_emulator_cpuinfo_text(const char *text,
+                                                  RaspSecurityReport *report);
 #endif
 
 #ifdef __cplusplus

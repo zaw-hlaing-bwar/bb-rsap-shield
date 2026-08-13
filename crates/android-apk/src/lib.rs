@@ -38,6 +38,7 @@ pub fn default_runtime_policy() -> IntegrityRuntimePolicy {
             deep_scan_on_suspicion: true,
             monitor_background_state: false,
         },
+        detections: default_runtime_detections(),
     }
 }
 
@@ -51,6 +52,19 @@ pub fn default_startup_payload_tampering_action() -> IntegrityRiskAction {
 
 pub fn default_runtime_monitoring() -> IntegrityRuntimeMonitoring {
     default_runtime_policy().monitoring
+}
+
+pub fn default_runtime_detections() -> IntegrityRuntimeDetections {
+    IntegrityRuntimeDetections {
+        root: IntegrityDetectionRule {
+            enabled: true,
+            weight: 20,
+        },
+        emulator: IntegrityDetectionRule {
+            enabled: false,
+            weight: 10,
+        },
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -134,6 +148,8 @@ pub struct IntegrityRuntimePolicy {
     pub startup_payload_tampering_action: IntegrityRiskAction,
     #[serde(default = "default_runtime_monitoring")]
     pub monitoring: IntegrityRuntimeMonitoring,
+    #[serde(default = "default_runtime_detections")]
+    pub detections: IntegrityRuntimeDetections,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -143,6 +159,18 @@ pub struct IntegrityRuntimeMonitoring {
     pub scan_interval_maximum_ms: u32,
     pub deep_scan_on_suspicion: bool,
     pub monitor_background_state: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IntegrityRuntimeDetections {
+    pub root: IntegrityDetectionRule,
+    pub emulator: IntegrityDetectionRule,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IntegrityDetectionRule {
+    pub enabled: bool,
+    pub weight: u8,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -858,7 +886,7 @@ fn is_jar_signature_metadata_entry(path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        hex_lower, is_jar_signature_metadata_entry, is_zip_slip_path,
+        default_runtime_detections, hex_lower, is_jar_signature_metadata_entry, is_zip_slip_path,
         rewrite_unsigned_apk_with_payload, ApkRewriteOptions, IntegrityManifest,
         IntegrityManifestInput, IntegrityProtectedAssetKind, IntegrityRiskAction,
         IntegrityRiskThresholds, IntegrityRuntimeMonitoring, IntegrityRuntimePolicy, IntegrityTool,
@@ -1147,6 +1175,7 @@ mod tests {
                         deep_scan_on_suspicion: true,
                         monitor_background_state: false,
                     },
+                    detections: default_runtime_detections(),
                 },
                 expected_certificate_sha256: vec!["a".repeat(64)],
                 payload_version: "test-payload".to_string(),

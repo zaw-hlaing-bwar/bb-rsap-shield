@@ -6,9 +6,10 @@ use std::process::Command;
 
 use android_apk::{
     rewrite_unsigned_apk_with_payload, ApkRewriteError, ApkRewriteOptions, IntegrityApkInventory,
-    IntegrityManifest, IntegrityManifestInput, IntegrityProtectedAssetKind, IntegrityRiskAction,
-    IntegrityRiskThresholds, IntegrityRuntimeMonitoring, IntegrityRuntimePolicy, IntegrityTool,
-    PayloadFiles, INTEGRITY_MANIFEST_ENTRY,
+    IntegrityDetectionRule, IntegrityManifest, IntegrityManifestInput, IntegrityProtectedAssetKind,
+    IntegrityRiskAction, IntegrityRiskThresholds, IntegrityRuntimeDetections,
+    IntegrityRuntimeMonitoring, IntegrityRuntimePolicy, IntegrityTool, PayloadFiles,
+    INTEGRITY_MANIFEST_ENTRY,
 };
 use android_signing::{
     align_apk, sign_apk, verify_alignment, verify_apk_signature, AndroidSigningTools,
@@ -1600,6 +1601,16 @@ fn integrity_runtime_policy(config: &RaspConfig) -> IntegrityRuntimePolicy {
             scan_interval_maximum_ms: config.runtime.scan_interval_ms.maximum,
             deep_scan_on_suspicion: config.runtime.deep_scan_on_suspicion,
             monitor_background_state: config.runtime.monitor_background_state,
+        },
+        detections: IntegrityRuntimeDetections {
+            root: IntegrityDetectionRule {
+                enabled: config.protections.root_detection.enabled,
+                weight: config.protections.root_detection.weight,
+            },
+            emulator: IntegrityDetectionRule {
+                enabled: config.protections.emulator_detection.enabled,
+                weight: config.protections.emulator_detection.weight,
+            },
         },
     }
 }

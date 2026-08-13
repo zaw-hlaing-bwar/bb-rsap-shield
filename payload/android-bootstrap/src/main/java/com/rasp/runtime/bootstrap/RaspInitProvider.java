@@ -60,12 +60,15 @@ public final class RaspInitProvider extends ContentProvider {
       int warnThreshold, int restrictThreshold, int terminateThreshold,
       String runtimeHighRiskAction, String startupIntegrityAction,
       String startupPayloadTamperingAction, int packageMatches,
-      int certificateMatches, int payloadMatches, int protectedAssetsMatch);
+      int certificateMatches, int payloadMatches, int protectedAssetsMatch,
+      int rootDetectionEnabled, int rootDetectionWeight,
+      int emulatorDetectionEnabled, int emulatorDetectionWeight);
 
   private static native int nativeMonitorScan(int reportThreshold,
       int warnThreshold, int restrictThreshold, int terminateThreshold,
       String runtimeHighRiskAction, String startupPayloadTamperingAction,
-      int protectedAssetsMatch);
+      int protectedAssetsMatch, int rootDetectionEnabled, int rootDetectionWeight,
+      int emulatorDetectionEnabled, int emulatorDetectionWeight);
 
   private static native int nativeLastActionCode();
 
@@ -115,7 +118,9 @@ public final class RaspInitProvider extends ContentProvider {
           policy.runtimeHighRiskAction, policy.startupIntegrityAction,
           policy.startupPayloadTamperingAction, packageMatches ? 1 : 0,
           certificateMatches ? 1 : 0, payloadMatches ? 1 : 0,
-          protectedAssetsMatch ? 1 : 0);
+          protectedAssetsMatch ? 1 : 0, policy.rootDetectionEnabled ? 1 : 0,
+          policy.rootDetectionWeight, policy.emulatorDetectionEnabled ? 1 : 0,
+          policy.emulatorDetectionWeight);
       refreshLastNativeReport();
       actionToApply = lastAction;
       initialized = true;
@@ -200,7 +205,9 @@ public final class RaspInitProvider extends ContentProvider {
         lastRiskScore = nativeMonitorScan(policy.reportThreshold,
             policy.warnThreshold, policy.restrictThreshold, policy.terminateThreshold,
             policy.runtimeHighRiskAction, policy.startupPayloadTamperingAction,
-            protectedAssetsMatch ? 1 : 0);
+            protectedAssetsMatch ? 1 : 0, policy.rootDetectionEnabled ? 1 : 0,
+            policy.rootDetectionWeight, policy.emulatorDetectionEnabled ? 1 : 0,
+            policy.emulatorDetectionWeight);
         refreshLastNativeReport();
         actionToApply = lastAction;
 
@@ -211,7 +218,10 @@ public final class RaspInitProvider extends ContentProvider {
               policy.warnThreshold, policy.restrictThreshold,
               policy.terminateThreshold, policy.runtimeHighRiskAction,
               policy.startupPayloadTamperingAction,
-              deepProtectedAssetsMatch ? 1 : 0);
+              deepProtectedAssetsMatch ? 1 : 0,
+              policy.rootDetectionEnabled ? 1 : 0, policy.rootDetectionWeight,
+              policy.emulatorDetectionEnabled ? 1 : 0,
+              policy.emulatorDetectionWeight);
           refreshLastNativeReport();
           actionToApply = lastAction;
         }
@@ -313,6 +323,10 @@ public final class RaspInitProvider extends ContentProvider {
     private final int scanIntervalMaximumMs;
     private final boolean deepScanOnSuspicion;
     private final boolean monitorBackgroundState;
+    private final boolean rootDetectionEnabled;
+    private final int rootDetectionWeight;
+    private final boolean emulatorDetectionEnabled;
+    private final int emulatorDetectionWeight;
     private final String expectedPackageName;
     private final List<String> expectedCertificateSha256;
     private final List<ProtectedAsset> protectedAssets;
@@ -328,7 +342,9 @@ public final class RaspInitProvider extends ContentProvider {
         String startupIntegrityAction, String startupPayloadTamperingAction,
         boolean monitoringEnabled, int scanIntervalMinimumMs,
         int scanIntervalMaximumMs, boolean deepScanOnSuspicion,
-        boolean monitorBackgroundState,
+        boolean monitorBackgroundState, boolean rootDetectionEnabled,
+        int rootDetectionWeight, boolean emulatorDetectionEnabled,
+        int emulatorDetectionWeight,
         String expectedPackageName, List<String> expectedCertificateSha256,
         List<ProtectedAsset> protectedAssets, int expectedEntryCount,
         String expectedEntrySetSha256, int expectedExecutableEntryCount,
@@ -345,6 +361,10 @@ public final class RaspInitProvider extends ContentProvider {
       this.scanIntervalMaximumMs = clampInterval(scanIntervalMaximumMs);
       this.deepScanOnSuspicion = deepScanOnSuspicion;
       this.monitorBackgroundState = monitorBackgroundState;
+      this.rootDetectionEnabled = rootDetectionEnabled;
+      this.rootDetectionWeight = rootDetectionWeight;
+      this.emulatorDetectionEnabled = emulatorDetectionEnabled;
+      this.emulatorDetectionWeight = emulatorDetectionWeight;
       this.expectedPackageName = expectedPackageName;
       this.expectedCertificateSha256 = expectedCertificateSha256;
       this.protectedAssets = protectedAssets;
@@ -357,7 +377,7 @@ public final class RaspInitProvider extends ContentProvider {
 
     private static RuntimePolicy defaults() {
       return new RuntimePolicy(20, 40, 70, 100, "REPORT", "TERMINATE",
-          "TERMINATE", true, 5000, 15000, true, false, "",
+          "TERMINATE", true, 5000, 15000, true, false, true, 20, false, 10, "",
           new ArrayList<String>(), new ArrayList<ProtectedAsset>(), 0, "", 0, "",
           false);
     }
@@ -374,6 +394,7 @@ public final class RaspInitProvider extends ContentProvider {
         JSONObject policy = root.optJSONObject("policy");
         JSONObject runtime = policy == null ? null : policy.optJSONObject("runtime");
         JSONObject monitoring = runtime == null ? null : runtime.optJSONObject("monitoring");
+        JSONObject detections = runtime == null ? null : runtime.optJSONObject("detections");
         JSONObject apkInventory = root.optJSONObject("apk_inventory");
         JSONArray protectedAssets = root.optJSONArray("protected_assets");
         JSONObject thresholds =
@@ -415,6 +436,13 @@ public final class RaspInitProvider extends ContentProvider {
                 ? defaults.monitorBackgroundState
                 : monitoring.optBoolean("monitor_background_state",
                     defaults.monitorBackgroundState),
+            optDetectionEnabled(detections, "root",
+                defaults.rootDetectionEnabled),
+            optDetectionWeight(detections, "root", defaults.rootDetectionWeight),
+            optDetectionEnabled(detections, "emulator",
+                defaults.emulatorDetectionEnabled),
+            optDetectionWeight(detections, "emulator",
+                defaults.emulatorDetectionWeight),
             application == null
                 ? ""
                 : application.optString("expected_package_name", ""),
@@ -443,6 +471,10 @@ public final class RaspInitProvider extends ContentProvider {
           && warnThreshold < restrictThreshold
           && restrictThreshold <= terminateThreshold
           && terminateThreshold <= 100
+          && rootDetectionWeight >= 0
+          && rootDetectionWeight <= 100
+          && emulatorDetectionWeight >= 0
+          && emulatorDetectionWeight <= 100
           && scanIntervalMinimumMs <= scanIntervalMaximumMs
           && expectedPackageName.length() > 0
           && !expectedCertificateSha256.isEmpty()
@@ -472,6 +504,24 @@ public final class RaspInitProvider extends ContentProvider {
         return fallback;
       }
       int value = object.optInt(name, fallback);
+      return value >= 0 && value <= 100 ? value : fallback;
+    }
+
+    private static boolean optDetectionEnabled(JSONObject detections, String name,
+        boolean fallback) {
+      JSONObject detection =
+          detections == null ? null : detections.optJSONObject(name);
+      return detection == null ? fallback : detection.optBoolean("enabled", fallback);
+    }
+
+    private static int optDetectionWeight(JSONObject detections, String name,
+        int fallback) {
+      JSONObject detection =
+          detections == null ? null : detections.optJSONObject(name);
+      if (detection == null) {
+        return fallback;
+      }
+      int value = detection.optInt("weight", fallback);
       return value >= 0 && value <= 100 ? value : fallback;
     }
 

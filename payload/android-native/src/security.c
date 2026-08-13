@@ -11,6 +11,17 @@
 #include <unistd.h>
 
 #if defined(__has_include)
+#if defined(__ANDROID__) && __has_include(<sys/system_properties.h>)
+#define RASP_SECURITY_HAS_ANDROID_PROPERTIES 1
+#include <sys/system_properties.h>
+#endif
+#endif
+
+#ifndef RASP_SECURITY_HAS_ANDROID_PROPERTIES
+#define RASP_SECURITY_HAS_ANDROID_PROPERTIES 0
+#endif
+
+#if defined(__has_include)
 #if __has_include(<sys/prctl.h>)
 #define RASP_SECURITY_HAS_PRCTL 1
 #include <sys/prctl.h>
@@ -45,10 +56,14 @@ typedef struct JavaVM JavaVM;
 #define RASP_CATEGORY_DEBUGGER "debugger"
 #define RASP_CATEGORY_MEMORY "memory"
 #define RASP_CATEGORY_INTEGRITY "integrity"
+#define RASP_CATEGORY_ROOT "root"
+#define RASP_CATEGORY_EMULATOR "emulator"
 #define RASP_SECURITY_MAX_PROC_LINES 4096U
 #define RASP_SECURITY_MAX_DIRECTORY_ENTRIES 512U
 #define RASP_SECURITY_MAX_ENVIRON_BYTES 65536U
 #define RASP_SECURITY_MAX_SELF_TEXT_BYTES (2U * 1024U * 1024U)
+#define RASP_SECURITY_DEFAULT_ROOT_WEIGHT 20U
+#define RASP_SECURITY_DEFAULT_EMULATOR_WEIGHT 10U
 #define RASP_FNV1A_64_OFFSET 14695981039346656037ULL
 #define RASP_FNV1A_64_PRIME 1099511628211ULL
 
@@ -102,6 +117,76 @@ static const char *const k_unix_socket_tokens[] = {
 static const char *const k_environment_tokens[] = {
     "LD_PRELOAD", "frida", "gum-js", "xposed", "zygisk", "substrate",
 };
+
+static const char *const k_root_su_paths[] = {
+    "/system/bin/su",
+    "/system/xbin/su",
+    "/sbin/su",
+    "/su/bin/su",
+    "/vendor/bin/su",
+    "/data/local/bin/su",
+    "/data/local/xbin/su",
+    "/data/local/su",
+    "/system/bin/.ext/.su",
+};
+
+static const char *const k_root_magisk_paths[] = {
+    "/data/adb/magisk",
+    "/data/adb/modules",
+    "/sbin/.magisk",
+    "/debug_ramdisk/magisk",
+    "/cache/magisk.log",
+};
+
+static const char *const k_root_superuser_paths[] = {
+    "/system/app/Superuser.apk",
+    "/system/etc/init.d/99SuperSUDaemon",
+    "/dev/com.koushikdutta.superuser.daemon",
+};
+
+static const char *const k_root_property_names[] = {
+    "ro.build.tags",
+    "ro.debuggable",
+    "ro.secure",
+    "service.adb.root",
+    "ro.boot.verifiedbootstate",
+    "ro.boot.flash.locked",
+    "ro.boot.vbmeta.device_state",
+};
+
+static const char *const k_emulator_file_paths[] = {
+    "/dev/qemu_pipe",
+    "/dev/qemu_trace",
+    "/dev/goldfish_pipe",
+    "/dev/socket/qemud",
+    "/dev/socket/baseband_genyd",
+    "/sys/qemu_trace",
+    "/system/bin/qemu-props",
+};
+
+static const char *const k_emulator_property_names[] = {
+    "ro.kernel.qemu",
+    "ro.boot.qemu",
+    "ro.hardware",
+    "ro.product.board",
+    "ro.product.brand",
+    "ro.product.device",
+    "ro.product.manufacturer",
+    "ro.product.model",
+    "ro.product.name",
+};
+
+static const char *const k_emulator_build_tokens[] = {
+    "generic", "sdk_gphone", "google_sdk", "emulator", "goldfish",
+    "ranchu", "vbox", "virtualbox", "genymotion", "nox",
+};
+
+#if RASP_SECURITY_HAS_JNI
+static const char *const k_emulator_build_fields[] = {
+    "BOARD", "BOOTLOADER", "BRAND", "DEVICE", "FINGERPRINT",
+    "HARDWARE", "MANUFACTURER", "MODEL", "PRODUCT",
+};
+#endif
 
 static void rasp_copy_string(char *destination, size_t destination_size,
                              const char *source);
@@ -282,6 +367,10 @@ RaspSecurityPolicy rasp_security_default_policy(void) {
   policy.runtime_high_risk_action = RASP_SECURITY_ACTION_REPORT;
   policy.startup_integrity_action = RASP_SECURITY_ACTION_TERMINATE;
   policy.startup_payload_tampering_action = RASP_SECURITY_ACTION_TERMINATE;
+  policy.root_detection_enabled = 1U;
+  policy.root_detection_weight = RASP_SECURITY_DEFAULT_ROOT_WEIGHT;
+  policy.emulator_detection_enabled = 0U;
+  policy.emulator_detection_weight = RASP_SECURITY_DEFAULT_EMULATOR_WEIGHT;
   return policy;
 }
 
@@ -325,6 +414,8 @@ static int rasp_policy_is_valid(const RaspSecurityPolicy *policy) {
   return policy != NULL && policy->report_threshold <= 100U &&
          policy->warn_threshold <= 100U && policy->restrict_threshold <= 100U &&
          policy->terminate_threshold <= 100U &&
+         policy->root_detection_weight <= 100U &&
+         policy->emulator_detection_weight <= 100U &&
          policy->report_threshold < policy->warn_threshold &&
          policy->warn_threshold < policy->restrict_threshold &&
          policy->restrict_threshold <= policy->terminate_threshold;
@@ -860,6 +951,327 @@ static void rasp_scan_environment_path(const char *path,
   }
 }
 
+static uint8_t rasp_configured_signal_weight(uint8_t configured_weight,
+                                             uint8_t fallback_weight) {
+  return configured_weight <= 100U ? configured_weight : fallback_weight;
+}
+
+static int rasp_path_exists(const char *path) {
+  return path != NULL && access(path, F_OK) == 0;
+}
+
+static int rasp_equals_any_case_insensitive(const char *value,
+                                            const char *const *candidates,
+                                            size_t candidate_count) {
+  if (value == NULL) {
+    return 0;
+  }
+  for (size_t index = 0U; index < candidate_count; index++) {
+    if (rasp_equals_case_insensitive(value, candidates[index])) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+static void rasp_scan_first_existing_path(const char *const *paths,
+                                          size_t path_count,
+                                          RaspSecurityReport *report,
+                                          const char *signal_id,
+                                          const char *category,
+                                          uint8_t confidence,
+                                          uint8_t severity,
+                                          uint8_t weight) {
+  for (size_t index = 0U; index < path_count; index++) {
+    if (rasp_path_exists(paths[index])) {
+      rasp_report_add_signal(report, signal_id, category, confidence, severity,
+                             weight, paths[index]);
+      return;
+    }
+  }
+}
+
+static void rasp_scan_root_paths(RaspSecurityReport *report, uint8_t weight) {
+  rasp_scan_first_existing_path(
+      k_root_su_paths, sizeof(k_root_su_paths) / sizeof(k_root_su_paths[0]),
+      report, "root.su_binary", RASP_CATEGORY_ROOT, 90U, 85U, weight);
+  rasp_scan_first_existing_path(
+      k_root_magisk_paths,
+      sizeof(k_root_magisk_paths) / sizeof(k_root_magisk_paths[0]), report,
+      "root.magisk_path", RASP_CATEGORY_ROOT, 85U, 80U, weight);
+  rasp_scan_first_existing_path(
+      k_root_superuser_paths,
+      sizeof(k_root_superuser_paths) / sizeof(k_root_superuser_paths[0]),
+      report, "root.superuser_artifact", RASP_CATEGORY_ROOT, 80U, 70U, weight);
+}
+
+static void rasp_property_evidence(char *buffer, size_t buffer_size,
+                                   const char *name, const char *value) {
+  if (buffer == NULL || buffer_size == 0U) {
+    return;
+  }
+  (void)snprintf(buffer, buffer_size, "%s=%s", name == NULL ? "" : name,
+                 value == NULL ? "" : value);
+}
+
+static void rasp_scan_root_property_pair(const char *name, const char *value,
+                                         RaspSecurityReport *report,
+                                         uint8_t weight) {
+  static const char *const bad_verified_boot_states[] = {"orange", "red"};
+  char evidence[RASP_SECURITY_SIGNAL_EVIDENCE_SIZE];
+
+  if (name == NULL || value == NULL || value[0] == '\0') {
+    return;
+  }
+  rasp_property_evidence(evidence, sizeof(evidence), name, value);
+
+  if (rasp_equals_case_insensitive(name, "ro.build.tags") &&
+      rasp_contains_case_insensitive(value, "test-keys")) {
+    rasp_report_add_signal(report, "root.test_keys", RASP_CATEGORY_ROOT, 75U,
+                           65U, weight, evidence);
+  }
+  if (rasp_equals_case_insensitive(name, "ro.debuggable") &&
+      strcmp(value, "1") == 0) {
+    rasp_report_add_signal(report, "root.debuggable_build", RASP_CATEGORY_ROOT,
+                           70U, 60U, weight, evidence);
+  }
+  if (rasp_equals_case_insensitive(name, "ro.secure") &&
+      strcmp(value, "0") == 0) {
+    rasp_report_add_signal(report, "root.insecure_system_property",
+                           RASP_CATEGORY_ROOT, 80U, 75U, weight, evidence);
+  }
+  if (rasp_equals_case_insensitive(name, "service.adb.root") &&
+      strcmp(value, "1") == 0) {
+    rasp_report_add_signal(report, "root.adb_root", RASP_CATEGORY_ROOT, 80U,
+                           75U, weight, evidence);
+  }
+  if (rasp_equals_case_insensitive(name, "ro.boot.verifiedbootstate") &&
+      rasp_equals_any_case_insensitive(
+          value, bad_verified_boot_states,
+          sizeof(bad_verified_boot_states) / sizeof(bad_verified_boot_states[0]))) {
+    rasp_report_add_signal(report, "root.verified_boot_untrusted",
+                           RASP_CATEGORY_ROOT, 75U, 70U, weight, evidence);
+  }
+  if (rasp_equals_case_insensitive(name, "ro.boot.flash.locked") &&
+      strcmp(value, "0") == 0) {
+    rasp_report_add_signal(report, "root.bootloader_unlocked",
+                           RASP_CATEGORY_ROOT, 65U, 55U, weight, evidence);
+  }
+  if (rasp_equals_case_insensitive(name, "ro.boot.vbmeta.device_state") &&
+      rasp_equals_case_insensitive(value, "unlocked")) {
+    rasp_report_add_signal(report, "root.bootloader_unlocked",
+                           RASP_CATEGORY_ROOT, 65U, 55U, weight, evidence);
+  }
+}
+
+static int rasp_android_property_get(const char *name, char *value,
+                                     size_t value_size) {
+#if RASP_SECURITY_HAS_ANDROID_PROPERTIES
+  int length;
+  if (name == NULL || value == NULL || value_size == 0U) {
+    return 0;
+  }
+  value[0] = '\0';
+  length = __system_property_get(name, value);
+  if (length <= 0) {
+    value[0] = '\0';
+    return 0;
+  }
+  value[value_size - 1U] = '\0';
+  return 1;
+#else
+  (void)name;
+  (void)value;
+  (void)value_size;
+  return 0;
+#endif
+}
+
+static void rasp_scan_android_properties(
+    const char *const *names, size_t name_count,
+    void (*scan_pair)(const char *, const char *, RaspSecurityReport *, uint8_t),
+    RaspSecurityReport *report, uint8_t weight) {
+  for (size_t index = 0U; index < name_count; index++) {
+    char value[128];
+    if (rasp_android_property_get(names[index], value, sizeof(value))) {
+      scan_pair(names[index], value, report, weight);
+    }
+  }
+}
+
+static int rasp_mount_point_is_system_partition(const char *mount_point) {
+  return rasp_equals_case_insensitive(mount_point, "/system") ||
+         rasp_equals_case_insensitive(mount_point, "/vendor") ||
+         rasp_equals_case_insensitive(mount_point, "/product") ||
+         rasp_equals_case_insensitive(mount_point, "/system_ext") ||
+         rasp_equals_case_insensitive(mount_point, "/odm");
+}
+
+static int rasp_mount_options_include_rw(const char *options) {
+  size_t length;
+
+  if (options == NULL) {
+    return 0;
+  }
+  length = strlen(options);
+  if (length < 2U) {
+    return 0;
+  }
+  return strcmp(options, "rw") == 0 || strncmp(options, "rw,", 3U) == 0 ||
+         strstr(options, ",rw,") != NULL ||
+         (length >= 3U && strcmp(options + length - 3U, ",rw") == 0);
+}
+
+static void rasp_scan_root_mounts_line(const char *line,
+                                       RaspSecurityReport *report,
+                                       uint8_t weight) {
+  char device[128];
+  char mount_point[128];
+  char filesystem[64];
+  char options[256];
+
+  if (line == NULL || report == NULL) {
+    return;
+  }
+  if (sscanf(line, "%127s %127s %63s %255s", device, mount_point, filesystem,
+             options) != 4) {
+    return;
+  }
+  if (rasp_mount_point_is_system_partition(mount_point) &&
+      rasp_mount_options_include_rw(options)) {
+    rasp_report_add_signal(report, "root.writable_system_partition",
+                           RASP_CATEGORY_ROOT, 70U, 65U, weight, mount_point);
+  }
+}
+
+static void rasp_scan_root_mounts_path(const char *path,
+                                       RaspSecurityReport *report,
+                                       uint8_t weight) {
+  char line[512];
+  uint32_t lines_read = 0U;
+  FILE *file = fopen(path, "r");
+  if (file == NULL) {
+    return;
+  }
+
+  while (lines_read < RASP_SECURITY_MAX_PROC_LINES &&
+         fgets(line, sizeof(line), file) != NULL) {
+    rasp_scan_root_mounts_line(line, report, weight);
+    lines_read++;
+  }
+
+  (void)fclose(file);
+}
+
+static void rasp_scan_root_state(RaspSecurityReport *report, uint8_t weight) {
+  uint8_t effective_weight =
+      rasp_configured_signal_weight(weight, RASP_SECURITY_DEFAULT_ROOT_WEIGHT);
+  rasp_scan_root_paths(report, effective_weight);
+  rasp_scan_android_properties(
+      k_root_property_names,
+      sizeof(k_root_property_names) / sizeof(k_root_property_names[0]),
+      rasp_scan_root_property_pair, report, effective_weight);
+  rasp_scan_root_mounts_path("/proc/mounts", report, effective_weight);
+}
+
+static void rasp_scan_emulator_build_pair(const char *name, const char *value,
+                                          RaspSecurityReport *report,
+                                          uint8_t weight) {
+  const char *token;
+  char evidence[RASP_SECURITY_SIGNAL_EVIDENCE_SIZE];
+
+  if (name == NULL || value == NULL || value[0] == '\0') {
+    return;
+  }
+
+  token = rasp_first_matching_token(
+      value, k_emulator_build_tokens,
+      sizeof(k_emulator_build_tokens) / sizeof(k_emulator_build_tokens[0]));
+  if (token == NULL) {
+    return;
+  }
+  rasp_property_evidence(evidence, sizeof(evidence), name, value);
+  rasp_report_add_signal(report, "emulator.build_profile",
+                         RASP_CATEGORY_EMULATOR, 80U, 60U, weight, evidence);
+}
+
+static void rasp_scan_emulator_property_pair(const char *name, const char *value,
+                                             RaspSecurityReport *report,
+                                             uint8_t weight) {
+  char evidence[RASP_SECURITY_SIGNAL_EVIDENCE_SIZE];
+
+  if (name == NULL || value == NULL || value[0] == '\0') {
+    return;
+  }
+  rasp_property_evidence(evidence, sizeof(evidence), name, value);
+
+  if ((rasp_equals_case_insensitive(name, "ro.kernel.qemu") ||
+       rasp_equals_case_insensitive(name, "ro.boot.qemu")) &&
+      strcmp(value, "1") == 0) {
+    rasp_report_add_signal(report, "emulator.qemu_property",
+                           RASP_CATEGORY_EMULATOR, 95U, 80U, weight, evidence);
+    return;
+  }
+
+  rasp_scan_emulator_build_pair(name, value, report, weight);
+}
+
+static void rasp_scan_emulator_files(RaspSecurityReport *report,
+                                     uint8_t weight) {
+  rasp_scan_first_existing_path(
+      k_emulator_file_paths,
+      sizeof(k_emulator_file_paths) / sizeof(k_emulator_file_paths[0]), report,
+      "emulator.qemu_file", RASP_CATEGORY_EMULATOR, 90U, 75U, weight);
+}
+
+static void rasp_scan_emulator_cpuinfo_line(const char *line,
+                                            RaspSecurityReport *report,
+                                            uint8_t weight) {
+  const char *token;
+
+  if (line == NULL || report == NULL) {
+    return;
+  }
+  token = rasp_first_matching_token(
+      line, k_emulator_build_tokens,
+      sizeof(k_emulator_build_tokens) / sizeof(k_emulator_build_tokens[0]));
+  if (token != NULL) {
+    rasp_report_add_signal(report, "emulator.cpuinfo",
+                           RASP_CATEGORY_EMULATOR, 75U, 55U, weight, token);
+  }
+}
+
+static void rasp_scan_emulator_cpuinfo_path(const char *path,
+                                            RaspSecurityReport *report,
+                                            uint8_t weight) {
+  char line[512];
+  uint32_t lines_read = 0U;
+  FILE *file = fopen(path, "r");
+  if (file == NULL) {
+    return;
+  }
+
+  while (lines_read < RASP_SECURITY_MAX_PROC_LINES &&
+         fgets(line, sizeof(line), file) != NULL) {
+    rasp_scan_emulator_cpuinfo_line(line, report, weight);
+    lines_read++;
+  }
+
+  (void)fclose(file);
+}
+
+static void rasp_scan_emulator_state(RaspSecurityReport *report,
+                                     uint8_t weight) {
+  uint8_t effective_weight = rasp_configured_signal_weight(
+      weight, RASP_SECURITY_DEFAULT_EMULATOR_WEIGHT);
+  rasp_scan_emulator_files(report, effective_weight);
+  rasp_scan_android_properties(
+      k_emulator_property_names,
+      sizeof(k_emulator_property_names) / sizeof(k_emulator_property_names[0]),
+      rasp_scan_emulator_property_pair, report, effective_weight);
+  rasp_scan_emulator_cpuinfo_path("/proc/cpuinfo", report, effective_weight);
+}
+
 static int rasp_parse_self_text_maps_line(const char *line,
                                           unsigned long long *start,
                                           unsigned long long *end) {
@@ -967,6 +1379,73 @@ static void rasp_scan_java_hook_classes(JNIEnv *env, RaspSecurityReport *report)
   }
 }
 
+static void rasp_scan_java_build_field(JNIEnv *env, jclass build_class,
+                                       const char *field_name,
+                                       RaspSecurityReport *report,
+                                       uint8_t weight) {
+  jfieldID field_id;
+  jstring value_string;
+  const char *value_chars;
+
+  if (env == NULL || build_class == NULL || field_name == NULL ||
+      report == NULL) {
+    return;
+  }
+
+  field_id = (*env)->GetStaticFieldID(env, build_class, field_name,
+                                      "Ljava/lang/String;");
+  if ((*env)->ExceptionCheck(env)) {
+    (*env)->ExceptionClear(env);
+    return;
+  }
+  if (field_id == NULL) {
+    return;
+  }
+
+  value_string = (jstring)(*env)->GetStaticObjectField(env, build_class, field_id);
+  if ((*env)->ExceptionCheck(env)) {
+    (*env)->ExceptionClear(env);
+    return;
+  }
+  if (value_string == NULL) {
+    return;
+  }
+
+  value_chars = (*env)->GetStringUTFChars(env, value_string, NULL);
+  if (value_chars != NULL) {
+    rasp_scan_emulator_build_pair(field_name, value_chars, report, weight);
+    (*env)->ReleaseStringUTFChars(env, value_string, value_chars);
+  }
+  (*env)->DeleteLocalRef(env, value_string);
+}
+
+static void rasp_scan_java_emulator_build(JNIEnv *env,
+                                          RaspSecurityReport *report,
+                                          uint8_t weight) {
+  jclass build_class;
+
+  if (env == NULL || report == NULL) {
+    return;
+  }
+
+  build_class = (*env)->FindClass(env, "android/os/Build");
+  if ((*env)->ExceptionCheck(env)) {
+    (*env)->ExceptionClear(env);
+  }
+  if (build_class == NULL) {
+    return;
+  }
+
+  for (size_t index = 0U;
+       index < sizeof(k_emulator_build_fields) / sizeof(k_emulator_build_fields[0]);
+       index++) {
+    rasp_scan_java_build_field(env, build_class, k_emulator_build_fields[index],
+                               report, weight);
+  }
+
+  (*env)->DeleteLocalRef(env, build_class);
+}
+
 static uint8_t rasp_threshold_from_jint(jint value, uint8_t fallback) {
   if (value < 0 || value > 100) {
     return fallback;
@@ -978,7 +1457,9 @@ static RaspSecurityPolicy rasp_policy_from_jni_args(
     JNIEnv *env, jint report_threshold, jint warn_threshold,
     jint restrict_threshold, jint terminate_threshold,
     jstring runtime_high_risk_action, jstring startup_integrity_action,
-    jstring startup_payload_tampering_action) {
+    jstring startup_payload_tampering_action, jint root_detection_enabled,
+    jint root_detection_weight, jint emulator_detection_enabled,
+    jint emulator_detection_weight) {
   RaspSecurityPolicy defaults = rasp_security_default_policy();
   RaspSecurityPolicy policy = defaults;
   const char *action_chars = NULL;
@@ -991,6 +1472,13 @@ static RaspSecurityPolicy rasp_policy_from_jni_args(
       rasp_threshold_from_jint(restrict_threshold, defaults.restrict_threshold);
   policy.terminate_threshold =
       rasp_threshold_from_jint(terminate_threshold, defaults.terminate_threshold);
+  policy.root_detection_enabled = root_detection_enabled == 0 ? 0U : 1U;
+  policy.root_detection_weight =
+      rasp_threshold_from_jint(root_detection_weight, defaults.root_detection_weight);
+  policy.emulator_detection_enabled =
+      emulator_detection_enabled == 0 ? 0U : 1U;
+  policy.emulator_detection_weight = rasp_threshold_from_jint(
+      emulator_detection_weight, defaults.emulator_detection_weight);
 
   if (runtime_high_risk_action != NULL) {
     action_chars =
@@ -1038,10 +1526,17 @@ static void rasp_set_last_report(const RaspSecurityReport *report) {
   g_last_report = *report;
 }
 
-int rasp_security_collect(RaspSecurityReport *report) {
+static int rasp_security_collect_with_policy(
+    RaspSecurityReport *report, const RaspSecurityPolicy *policy) {
+  RaspSecurityPolicy default_policy;
+  const RaspSecurityPolicy *effective_policy;
+
   if (report == NULL) {
     return -1;
   }
+
+  default_policy = rasp_security_default_policy();
+  effective_policy = rasp_policy_is_valid(policy) ? policy : &default_policy;
 
   rasp_report_init(report);
   rasp_harden_process(report);
@@ -1054,9 +1549,19 @@ int rasp_security_collect(RaspSecurityReport *report) {
   rasp_scan_tcp_path("/proc/net/tcp6", report);
   rasp_scan_unix_path("/proc/net/unix", report);
   rasp_scan_environment_path("/proc/self/environ", report);
-  (void)rasp_security_apply_policy(report, NULL);
+  if (effective_policy->root_detection_enabled != 0U) {
+    rasp_scan_root_state(report, effective_policy->root_detection_weight);
+  }
+  if (effective_policy->emulator_detection_enabled != 0U) {
+    rasp_scan_emulator_state(report, effective_policy->emulator_detection_weight);
+  }
+  (void)rasp_security_apply_policy(report, effective_policy);
 
   return 0;
+}
+
+int rasp_security_collect(RaspSecurityReport *report) {
+  return rasp_security_collect_with_policy(report, NULL);
 }
 
 __attribute__((visibility("default"))) int rasp_security_initialize(void) {
@@ -1218,25 +1723,33 @@ Java_com_rasp_runtime_bootstrap_RaspInitProvider_nativeInitialize(
     jstring runtime_high_risk_action, jstring startup_integrity_action,
     jstring startup_payload_tampering_action, jint package_matches,
     jint certificate_matches, jint payload_matches,
-    jint protected_assets_match) {
+    jint protected_assets_match, jint root_detection_enabled,
+    jint root_detection_weight, jint emulator_detection_enabled,
+    jint emulator_detection_weight) {
   RaspSecurityReport report;
   RaspSecurityPolicy policy;
   (void)clazz;
   (void)context;
 
-  if (rasp_security_collect(&report) != 0) {
+  policy = rasp_policy_from_jni_args(
+      env, report_threshold, warn_threshold, restrict_threshold,
+      terminate_threshold, runtime_high_risk_action, startup_integrity_action,
+      startup_payload_tampering_action, root_detection_enabled,
+      root_detection_weight, emulator_detection_enabled,
+      emulator_detection_weight);
+
+  if (rasp_security_collect_with_policy(&report, &policy) != 0) {
     rasp_report_init(&report);
   }
   rasp_scan_java_hook_classes(env, &report);
+  if (policy.emulator_detection_enabled != 0U) {
+    rasp_scan_java_emulator_build(env, &report,
+                                  policy.emulator_detection_weight);
+  }
   (void)rasp_security_add_startup_identity_signals(
       &report, package_matches != 0, certificate_matches != 0);
   (void)rasp_security_add_startup_payload_signals(
       &report, payload_matches != 0, protected_assets_match != 0);
-  policy = rasp_policy_from_jni_args(env, report_threshold, warn_threshold,
-                                     restrict_threshold, terminate_threshold,
-                                     runtime_high_risk_action,
-                                     startup_integrity_action,
-                                     startup_payload_tampering_action);
   (void)rasp_security_apply_policy(&report, &policy);
   rasp_set_last_report(&report);
   rasp_enforce_terminal_action(&report);
@@ -1257,22 +1770,31 @@ Java_com_rasp_runtime_bootstrap_RaspInitProvider_nativeMonitorScan(
     JNIEnv *env, jclass clazz, jint report_threshold, jint warn_threshold,
     jint restrict_threshold, jint terminate_threshold,
     jstring runtime_high_risk_action, jstring startup_payload_tampering_action,
-    jint protected_assets_match) {
+    jint protected_assets_match, jint root_detection_enabled,
+    jint root_detection_weight, jint emulator_detection_enabled,
+    jint emulator_detection_weight) {
   RaspSecurityReport report;
   RaspSecurityPolicy policy;
   (void)clazz;
 
-  if (rasp_security_collect(&report) != 0) {
+  policy = rasp_policy_from_jni_args(
+      env, report_threshold, warn_threshold, restrict_threshold,
+      terminate_threshold, runtime_high_risk_action, NULL,
+      startup_payload_tampering_action, root_detection_enabled,
+      root_detection_weight, emulator_detection_enabled,
+      emulator_detection_weight);
+
+  if (rasp_security_collect_with_policy(&report, &policy) != 0) {
     rasp_report_init(&report);
   }
 
   rasp_scan_java_hook_classes(env, &report);
+  if (policy.emulator_detection_enabled != 0U) {
+    rasp_scan_java_emulator_build(env, &report,
+                                  policy.emulator_detection_weight);
+  }
   (void)rasp_security_add_runtime_payload_signals(
       &report, protected_assets_match != 0);
-  policy = rasp_policy_from_jni_args(env, report_threshold, warn_threshold,
-                                     restrict_threshold, terminate_threshold,
-                                     runtime_high_risk_action, NULL,
-                                     startup_payload_tampering_action);
   (void)rasp_security_apply_policy(&report, &policy);
   rasp_set_last_report(&report);
   rasp_enforce_terminal_action(&report);
@@ -1292,6 +1814,39 @@ Java_com_rasp_runtime_bootstrap_RaspInitProvider_nativeLastReportJson(
 #endif
 
 #ifdef RASP_SECURITY_TEST
+static void rasp_scan_property_text(
+    const char *text,
+    void (*scan_pair)(const char *, const char *, RaspSecurityReport *, uint8_t),
+    RaspSecurityReport *report, uint8_t weight) {
+  const char *line_start;
+
+  if (text == NULL || scan_pair == NULL || report == NULL) {
+    return;
+  }
+
+  line_start = text;
+  while (*line_start != '\0') {
+    char line[256];
+    char *separator;
+    size_t length = 0U;
+    while (line_start[length] != '\0' && line_start[length] != '\n' &&
+           length + 1U < sizeof(line)) {
+      length++;
+    }
+    memcpy(line, line_start, length);
+    line[length] = '\0';
+    separator = strchr(line, '=');
+    if (separator != NULL) {
+      *separator = '\0';
+      scan_pair(line, separator + 1, report, weight);
+    }
+    line_start += length;
+    if (*line_start == '\n') {
+      line_start++;
+    }
+  }
+}
+
 int rasp_security_test_scan_maps_text(const char *text, RaspSecurityReport *report) {
   const char *line_start;
 
@@ -1438,6 +1993,121 @@ int rasp_security_test_scan_environment_text(const char *text,
     rasp_report_add_signal(report, "instrumentation.suspicious_environment",
                            RASP_CATEGORY_INSTRUMENTATION, 65U, 50U, 25U,
                            token);
+  }
+  (void)rasp_security_apply_policy(report, NULL);
+  return 0;
+}
+
+int rasp_security_test_scan_root_paths_text(const char *text,
+                                            RaspSecurityReport *report) {
+  if (text == NULL || report == NULL) {
+    return -1;
+  }
+
+  rasp_report_init(report);
+  if (rasp_contains_case_insensitive(text, "/su") ||
+      rasp_contains_case_insensitive(text, "magisk") ||
+      rasp_contains_case_insensitive(text, "Superuser.apk")) {
+    rasp_report_add_signal(report, "root.su_binary", RASP_CATEGORY_ROOT, 90U,
+                           85U, RASP_SECURITY_DEFAULT_ROOT_WEIGHT, text);
+  }
+  (void)rasp_security_apply_policy(report, NULL);
+  return 0;
+}
+
+int rasp_security_test_scan_root_properties_text(const char *text,
+                                                 RaspSecurityReport *report) {
+  if (text == NULL || report == NULL) {
+    return -1;
+  }
+
+  rasp_report_init(report);
+  rasp_scan_property_text(text, rasp_scan_root_property_pair, report,
+                          RASP_SECURITY_DEFAULT_ROOT_WEIGHT);
+  (void)rasp_security_apply_policy(report, NULL);
+  return 0;
+}
+
+int rasp_security_test_scan_root_mounts_text(const char *text,
+                                             RaspSecurityReport *report) {
+  const char *line_start;
+
+  if (text == NULL || report == NULL) {
+    return -1;
+  }
+
+  rasp_report_init(report);
+  line_start = text;
+  while (*line_start != '\0') {
+    char line[512];
+    size_t length = 0U;
+    while (line_start[length] != '\0' && line_start[length] != '\n' &&
+           length + 1U < sizeof(line)) {
+      length++;
+    }
+    memcpy(line, line_start, length);
+    line[length] = '\0';
+    rasp_scan_root_mounts_line(line, report, RASP_SECURITY_DEFAULT_ROOT_WEIGHT);
+    line_start += length;
+    if (*line_start == '\n') {
+      line_start++;
+    }
+  }
+  (void)rasp_security_apply_policy(report, NULL);
+  return 0;
+}
+
+int rasp_security_test_scan_emulator_build_text(const char *text,
+                                                RaspSecurityReport *report) {
+  if (text == NULL || report == NULL) {
+    return -1;
+  }
+
+  rasp_report_init(report);
+  rasp_scan_property_text(text, rasp_scan_emulator_build_pair, report,
+                          RASP_SECURITY_DEFAULT_EMULATOR_WEIGHT);
+  (void)rasp_security_apply_policy(report, NULL);
+  return 0;
+}
+
+int rasp_security_test_scan_emulator_properties_text(
+    const char *text, RaspSecurityReport *report) {
+  if (text == NULL || report == NULL) {
+    return -1;
+  }
+
+  rasp_report_init(report);
+  rasp_scan_property_text(text, rasp_scan_emulator_property_pair, report,
+                          RASP_SECURITY_DEFAULT_EMULATOR_WEIGHT);
+  (void)rasp_security_apply_policy(report, NULL);
+  return 0;
+}
+
+int rasp_security_test_scan_emulator_cpuinfo_text(const char *text,
+                                                  RaspSecurityReport *report) {
+  const char *line_start;
+
+  if (text == NULL || report == NULL) {
+    return -1;
+  }
+
+  rasp_report_init(report);
+  line_start = text;
+  while (*line_start != '\0') {
+    char line[512];
+    size_t length = 0U;
+    while (line_start[length] != '\0' && line_start[length] != '\n' &&
+           length + 1U < sizeof(line)) {
+      length++;
+    }
+    memcpy(line, line_start, length);
+    line[length] = '\0';
+    rasp_scan_emulator_cpuinfo_line(line, report,
+                                    RASP_SECURITY_DEFAULT_EMULATOR_WEIGHT);
+    line_start += length;
+    if (*line_start == '\n') {
+      line_start++;
+    }
   }
   (void)rasp_security_apply_policy(report, NULL);
   return 0;

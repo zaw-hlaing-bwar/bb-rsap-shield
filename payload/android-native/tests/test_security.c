@@ -102,6 +102,75 @@ static void detects_suspicious_environment(void) {
   assert(report.action == RASP_SECURITY_ACTION_REPORT);
 }
 
+static void detects_root_paths(void) {
+  RaspSecurityReport report;
+
+  assert(rasp_security_test_scan_root_paths_text("/system/xbin/su", &report) == 0);
+  assert(has_signal(&report, "root.su_binary"));
+  assert(report.risk_score == 20U);
+  assert(report.action == RASP_SECURITY_ACTION_REPORT);
+}
+
+static void detects_root_properties(void) {
+  RaspSecurityReport report;
+
+  assert(rasp_security_test_scan_root_properties_text(
+             "ro.build.tags=release-keys,test-keys\n"
+             "ro.secure=0\n"
+             "ro.boot.vbmeta.device_state=unlocked\n",
+             &report) == 0);
+  assert(has_signal(&report, "root.test_keys"));
+  assert(has_signal(&report, "root.insecure_system_property"));
+  assert(has_signal(&report, "root.bootloader_unlocked"));
+  assert(report.risk_score == 60U);
+  assert(report.action == RASP_SECURITY_ACTION_WARN);
+}
+
+static void detects_root_mounts(void) {
+  RaspSecurityReport report;
+
+  assert(rasp_security_test_scan_root_mounts_text(
+             "/dev/block/dm-0 /system ext4 rw,seclabel,relatime 0 0\n",
+             &report) == 0);
+  assert(has_signal(&report, "root.writable_system_partition"));
+  assert(report.risk_score == 20U);
+  assert(report.action == RASP_SECURITY_ACTION_REPORT);
+}
+
+static void detects_emulator_build_fields(void) {
+  RaspSecurityReport report;
+
+  assert(rasp_security_test_scan_emulator_build_text(
+             "FINGERPRINT=google/sdk_gphone64_arm64/emulator:15\n",
+             &report) == 0);
+  assert(has_signal(&report, "emulator.build_profile"));
+  assert(report.risk_score == 10U);
+  assert(report.action == RASP_SECURITY_ACTION_ALLOW);
+}
+
+static void detects_emulator_properties(void) {
+  RaspSecurityReport report;
+
+  assert(rasp_security_test_scan_emulator_properties_text(
+             "ro.kernel.qemu=1\nro.hardware=ranchu\n",
+             &report) == 0);
+  assert(has_signal(&report, "emulator.qemu_property"));
+  assert(has_signal(&report, "emulator.build_profile"));
+  assert(report.risk_score == 20U);
+  assert(report.action == RASP_SECURITY_ACTION_REPORT);
+}
+
+static void detects_emulator_cpuinfo(void) {
+  RaspSecurityReport report;
+
+  assert(rasp_security_test_scan_emulator_cpuinfo_text(
+             "Hardware\t: Goldfish\n",
+             &report) == 0);
+  assert(has_signal(&report, "emulator.cpuinfo"));
+  assert(report.risk_score == 10U);
+  assert(report.action == RASP_SECURITY_ACTION_ALLOW);
+}
+
 static void applies_configured_high_risk_action(void) {
   static const char maps[] =
       "70000000-70100000 r-xp 00000000 fd:00 1 /data/app/libfrida-gadget.so\n"
@@ -177,6 +246,12 @@ int main(void) {
   detects_frida_default_ports();
   detects_frida_unix_socket();
   detects_suspicious_environment();
+  detects_root_paths();
+  detects_root_properties();
+  detects_root_mounts();
+  detects_emulator_build_fields();
+  detects_emulator_properties();
+  detects_emulator_cpuinfo();
   applies_configured_high_risk_action();
   startup_identity_mismatch_takes_precedence();
   startup_payload_tampering_takes_precedence();

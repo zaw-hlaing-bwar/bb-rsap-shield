@@ -12,3 +12,5 @@
 *.pem
 *.key
 *.log
+output-apks/*
+rasp.config.json
