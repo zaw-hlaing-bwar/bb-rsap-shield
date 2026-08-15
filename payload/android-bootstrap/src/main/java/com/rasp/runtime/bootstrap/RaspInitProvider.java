@@ -61,13 +61,19 @@ public final class RaspInitProvider extends ContentProvider {
       String runtimeHighRiskAction, String startupIntegrityAction,
       String startupPayloadTamperingAction, int packageMatches,
       int certificateMatches, int payloadMatches, int protectedAssetsMatch,
+      int debuggerDetectionEnabled, int debuggerDetectionWeight,
+      int instrumentationDetectionEnabled, int instrumentationDetectionWeight,
+      int memoryIntegrityEnabled, int memoryIntegrityWeight,
       int rootDetectionEnabled, int rootDetectionWeight,
       int emulatorDetectionEnabled, int emulatorDetectionWeight);
 
   private static native int nativeMonitorScan(int reportThreshold,
       int warnThreshold, int restrictThreshold, int terminateThreshold,
       String runtimeHighRiskAction, String startupPayloadTamperingAction,
-      int protectedAssetsMatch, int rootDetectionEnabled, int rootDetectionWeight,
+      int protectedAssetsMatch, int debuggerDetectionEnabled,
+      int debuggerDetectionWeight, int instrumentationDetectionEnabled,
+      int instrumentationDetectionWeight, int memoryIntegrityEnabled,
+      int memoryIntegrityWeight, int rootDetectionEnabled, int rootDetectionWeight,
       int emulatorDetectionEnabled, int emulatorDetectionWeight);
 
   private static native int nativeLastActionCode();
@@ -118,7 +124,13 @@ public final class RaspInitProvider extends ContentProvider {
           policy.runtimeHighRiskAction, policy.startupIntegrityAction,
           policy.startupPayloadTamperingAction, packageMatches ? 1 : 0,
           certificateMatches ? 1 : 0, payloadMatches ? 1 : 0,
-          protectedAssetsMatch ? 1 : 0, policy.rootDetectionEnabled ? 1 : 0,
+          protectedAssetsMatch ? 1 : 0,
+          policy.debuggerDetectionEnabled ? 1 : 0,
+          policy.debuggerDetectionWeight,
+          policy.instrumentationDetectionEnabled ? 1 : 0,
+          policy.instrumentationDetectionWeight,
+          policy.memoryIntegrityEnabled ? 1 : 0, policy.memoryIntegrityWeight,
+          policy.rootDetectionEnabled ? 1 : 0,
           policy.rootDetectionWeight, policy.emulatorDetectionEnabled ? 1 : 0,
           policy.emulatorDetectionWeight);
       refreshLastNativeReport();
@@ -205,7 +217,13 @@ public final class RaspInitProvider extends ContentProvider {
         lastRiskScore = nativeMonitorScan(policy.reportThreshold,
             policy.warnThreshold, policy.restrictThreshold, policy.terminateThreshold,
             policy.runtimeHighRiskAction, policy.startupPayloadTamperingAction,
-            protectedAssetsMatch ? 1 : 0, policy.rootDetectionEnabled ? 1 : 0,
+            protectedAssetsMatch ? 1 : 0,
+            policy.debuggerDetectionEnabled ? 1 : 0,
+            policy.debuggerDetectionWeight,
+            policy.instrumentationDetectionEnabled ? 1 : 0,
+            policy.instrumentationDetectionWeight,
+            policy.memoryIntegrityEnabled ? 1 : 0, policy.memoryIntegrityWeight,
+            policy.rootDetectionEnabled ? 1 : 0,
             policy.rootDetectionWeight, policy.emulatorDetectionEnabled ? 1 : 0,
             policy.emulatorDetectionWeight);
         refreshLastNativeReport();
@@ -219,6 +237,11 @@ public final class RaspInitProvider extends ContentProvider {
               policy.terminateThreshold, policy.runtimeHighRiskAction,
               policy.startupPayloadTamperingAction,
               deepProtectedAssetsMatch ? 1 : 0,
+              policy.debuggerDetectionEnabled ? 1 : 0,
+              policy.debuggerDetectionWeight,
+              policy.instrumentationDetectionEnabled ? 1 : 0,
+              policy.instrumentationDetectionWeight,
+              policy.memoryIntegrityEnabled ? 1 : 0, policy.memoryIntegrityWeight,
               policy.rootDetectionEnabled ? 1 : 0, policy.rootDetectionWeight,
               policy.emulatorDetectionEnabled ? 1 : 0,
               policy.emulatorDetectionWeight);
@@ -323,6 +346,12 @@ public final class RaspInitProvider extends ContentProvider {
     private final int scanIntervalMaximumMs;
     private final boolean deepScanOnSuspicion;
     private final boolean monitorBackgroundState;
+    private final boolean debuggerDetectionEnabled;
+    private final int debuggerDetectionWeight;
+    private final boolean instrumentationDetectionEnabled;
+    private final int instrumentationDetectionWeight;
+    private final boolean memoryIntegrityEnabled;
+    private final int memoryIntegrityWeight;
     private final boolean rootDetectionEnabled;
     private final int rootDetectionWeight;
     private final boolean emulatorDetectionEnabled;
@@ -342,7 +371,10 @@ public final class RaspInitProvider extends ContentProvider {
         String startupIntegrityAction, String startupPayloadTamperingAction,
         boolean monitoringEnabled, int scanIntervalMinimumMs,
         int scanIntervalMaximumMs, boolean deepScanOnSuspicion,
-        boolean monitorBackgroundState, boolean rootDetectionEnabled,
+        boolean monitorBackgroundState, boolean debuggerDetectionEnabled,
+        int debuggerDetectionWeight, boolean instrumentationDetectionEnabled,
+        int instrumentationDetectionWeight, boolean memoryIntegrityEnabled,
+        int memoryIntegrityWeight, boolean rootDetectionEnabled,
         int rootDetectionWeight, boolean emulatorDetectionEnabled,
         int emulatorDetectionWeight,
         String expectedPackageName, List<String> expectedCertificateSha256,
@@ -361,6 +393,12 @@ public final class RaspInitProvider extends ContentProvider {
       this.scanIntervalMaximumMs = clampInterval(scanIntervalMaximumMs);
       this.deepScanOnSuspicion = deepScanOnSuspicion;
       this.monitorBackgroundState = monitorBackgroundState;
+      this.debuggerDetectionEnabled = debuggerDetectionEnabled;
+      this.debuggerDetectionWeight = debuggerDetectionWeight;
+      this.instrumentationDetectionEnabled = instrumentationDetectionEnabled;
+      this.instrumentationDetectionWeight = instrumentationDetectionWeight;
+      this.memoryIntegrityEnabled = memoryIntegrityEnabled;
+      this.memoryIntegrityWeight = memoryIntegrityWeight;
       this.rootDetectionEnabled = rootDetectionEnabled;
       this.rootDetectionWeight = rootDetectionWeight;
       this.emulatorDetectionEnabled = emulatorDetectionEnabled;
@@ -377,9 +415,9 @@ public final class RaspInitProvider extends ContentProvider {
 
     private static RuntimePolicy defaults() {
       return new RuntimePolicy(20, 40, 70, 100, "REPORT", "TERMINATE",
-          "TERMINATE", true, 5000, 15000, true, false, true, 20, false, 10, "",
-          new ArrayList<String>(), new ArrayList<ProtectedAsset>(), 0, "", 0, "",
-          false);
+          "TERMINATE", true, 5000, 15000, true, false, true, 40, true, 60,
+          true, 60, true, 20, false, 10, "", new ArrayList<String>(),
+          new ArrayList<ProtectedAsset>(), 0, "", 0, "", false);
     }
 
     private static RuntimePolicy load(Context context) {
@@ -436,6 +474,18 @@ public final class RaspInitProvider extends ContentProvider {
                 ? defaults.monitorBackgroundState
                 : monitoring.optBoolean("monitor_background_state",
                     defaults.monitorBackgroundState),
+            optDetectionEnabled(detections, "debugger",
+                defaults.debuggerDetectionEnabled),
+            optDetectionWeight(detections, "debugger",
+                defaults.debuggerDetectionWeight),
+            optDetectionEnabled(detections, "instrumentation",
+                defaults.instrumentationDetectionEnabled),
+            optDetectionWeight(detections, "instrumentation",
+                defaults.instrumentationDetectionWeight),
+            optDetectionEnabled(detections, "memory",
+                defaults.memoryIntegrityEnabled),
+            optDetectionWeight(detections, "memory",
+                defaults.memoryIntegrityWeight),
             optDetectionEnabled(detections, "root",
                 defaults.rootDetectionEnabled),
             optDetectionWeight(detections, "root", defaults.rootDetectionWeight),
@@ -471,6 +521,12 @@ public final class RaspInitProvider extends ContentProvider {
           && warnThreshold < restrictThreshold
           && restrictThreshold <= terminateThreshold
           && terminateThreshold <= 100
+          && debuggerDetectionWeight >= 0
+          && debuggerDetectionWeight <= 100
+          && instrumentationDetectionWeight >= 0
+          && instrumentationDetectionWeight <= 100
+          && memoryIntegrityWeight >= 0
+          && memoryIntegrityWeight <= 100
           && rootDetectionWeight >= 0
           && rootDetectionWeight <= 100
           && emulatorDetectionWeight >= 0

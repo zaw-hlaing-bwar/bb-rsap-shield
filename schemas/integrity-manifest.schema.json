@@ -61,7 +61,7 @@
         "runtime": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["thresholds", "runtime_high_risk_action"],
+          "required": ["thresholds", "runtime_high_risk_action", "detections"],
           "properties": {
             "thresholds": {
               "type": "object",
@@ -118,6 +118,34 @@
                 },
                 "monitor_background_state": {
                   "type": "boolean"
+                }
+              }
+            },
+            "detections": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "debugger",
+                "instrumentation",
+                "memory",
+                "root",
+                "emulator"
+              ],
+              "properties": {
+                "debugger": {
+                  "$ref": "#/$defs/detection_rule"
+                },
+                "instrumentation": {
+                  "$ref": "#/$defs/detection_rule"
+                },
+                "memory": {
+                  "$ref": "#/$defs/detection_rule"
+                },
+                "root": {
+                  "$ref": "#/$defs/detection_rule"
+                },
+                "emulator": {
+                  "$ref": "#/$defs/detection_rule"
                 }
               }
             }
@@ -259,6 +287,21 @@
     },
     "risk_action": {
       "enum": ["ALLOW", "REPORT", "WARN", "LOCK_STARTUP", "TERMINATE"]
+    },
+    "detection_rule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "weight"],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "weight": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        }
+      }
     }
   }
 }

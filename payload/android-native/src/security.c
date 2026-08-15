@@ -367,6 +367,12 @@ RaspSecurityPolicy rasp_security_default_policy(void) {
   policy.runtime_high_risk_action = RASP_SECURITY_ACTION_REPORT;
   policy.startup_integrity_action = RASP_SECURITY_ACTION_TERMINATE;
   policy.startup_payload_tampering_action = RASP_SECURITY_ACTION_TERMINATE;
+  policy.debugger_detection_enabled = 1U;
+  policy.debugger_detection_weight = 40U;
+  policy.instrumentation_detection_enabled = 1U;
+  policy.instrumentation_detection_weight = 60U;
+  policy.memory_integrity_enabled = 1U;
+  policy.memory_integrity_weight = 60U;
   policy.root_detection_enabled = 1U;
   policy.root_detection_weight = RASP_SECURITY_DEFAULT_ROOT_WEIGHT;
   policy.emulator_detection_enabled = 0U;
@@ -414,6 +420,9 @@ static int rasp_policy_is_valid(const RaspSecurityPolicy *policy) {
   return policy != NULL && policy->report_threshold <= 100U &&
          policy->warn_threshold <= 100U && policy->restrict_threshold <= 100U &&
          policy->terminate_threshold <= 100U &&
+         policy->debugger_detection_weight <= 100U &&
+         policy->instrumentation_detection_weight <= 100U &&
+         policy->memory_integrity_weight <= 100U &&
          policy->root_detection_weight <= 100U &&
          policy->emulator_detection_weight <= 100U &&
          policy->report_threshold < policy->warn_threshold &&
@@ -956,6 +965,104 @@ static uint8_t rasp_configured_signal_weight(uint8_t configured_weight,
   return configured_weight <= 100U ? configured_weight : fallback_weight;
 }
 
+static uint8_t rasp_cap_signal_weight(uint8_t signal_weight,
+                                      uint8_t configured_weight) {
+  if (configured_weight > 100U) {
+    return signal_weight;
+  }
+  return signal_weight < configured_weight ? signal_weight : configured_weight;
+}
+
+static int rasp_signal_id_equals(const RaspSecuritySignal *signal,
+                                 const char *id) {
+  return signal != NULL && id != NULL &&
+         strncmp(signal->id, id, RASP_SECURITY_SIGNAL_ID_SIZE) == 0;
+}
+
+static int rasp_signal_category_equals(const RaspSecuritySignal *signal,
+                                       const char *category) {
+  return signal != NULL && category != NULL &&
+         strncmp(signal->category, category,
+                 RASP_SECURITY_SIGNAL_CATEGORY_SIZE) == 0;
+}
+
+static void rasp_recalculate_risk_score(RaspSecurityReport *report) {
+  uint32_t risk_score = 0U;
+
+  if (report == NULL) {
+    return;
+  }
+
+  for (uint32_t index = 0U; index < report->signal_count; index++) {
+    risk_score += report->signals[index].weight;
+    if (risk_score > 100U) {
+      risk_score = 100U;
+      break;
+    }
+  }
+
+  report->risk_score = risk_score;
+}
+
+static int rasp_apply_runtime_detector_policy_to_signal(
+    RaspSecuritySignal *signal, const RaspSecurityPolicy *policy) {
+  if (signal == NULL || policy == NULL) {
+    return 0;
+  }
+
+  if (rasp_signal_category_equals(signal, RASP_CATEGORY_DEBUGGER)) {
+    if (policy->debugger_detection_enabled == 0U) {
+      return 0;
+    }
+    signal->weight = rasp_cap_signal_weight(
+        signal->weight, policy->debugger_detection_weight);
+    return 1;
+  }
+
+  if (rasp_signal_category_equals(signal, RASP_CATEGORY_INSTRUMENTATION)) {
+    if (policy->instrumentation_detection_enabled == 0U) {
+      return 0;
+    }
+    signal->weight = rasp_cap_signal_weight(
+        signal->weight, policy->instrumentation_detection_weight);
+    return 1;
+  }
+
+  if (rasp_signal_category_equals(signal, RASP_CATEGORY_MEMORY) ||
+      rasp_signal_id_equals(signal, "integrity.native_text_modified")) {
+    if (policy->memory_integrity_enabled == 0U) {
+      return 0;
+    }
+    signal->weight =
+        rasp_cap_signal_weight(signal->weight, policy->memory_integrity_weight);
+    return 1;
+  }
+
+  return 1;
+}
+
+static void rasp_apply_runtime_detector_policy(
+    RaspSecurityReport *report, const RaspSecurityPolicy *policy) {
+  uint32_t write_index = 0U;
+
+  if (report == NULL || policy == NULL) {
+    return;
+  }
+
+  for (uint32_t read_index = 0U; read_index < report->signal_count;
+       read_index++) {
+    RaspSecuritySignal signal = report->signals[read_index];
+    if (!rasp_apply_runtime_detector_policy_to_signal(&signal, policy)) {
+      continue;
+    }
+    report->signals[write_index] = signal;
+    write_index++;
+  }
+
+  report->signal_count = write_index;
+  rasp_recalculate_risk_score(report);
+}
+
 static int rasp_path_exists(const char *path) {
   return path != NULL && access(path, F_OK) == 0;
 }
@@ -1457,7 +1564,10 @@ static RaspSecurityPolicy rasp_policy_from_jni_args(
     JNIEnv *env, jint report_threshold, jint warn_threshold,
     jint restrict_threshold, jint terminate_threshold,
     jstring runtime_high_risk_action, jstring startup_integrity_action,
-    jstring startup_payload_tampering_action, jint root_detection_enabled,
+    jstring startup_payload_tampering_action, jint debugger_detection_enabled,
+    jint debugger_detection_weight, jint instrumentation_detection_enabled,
+    jint instrumentation_detection_weight, jint memory_integrity_enabled,
+    jint memory_integrity_weight, jint root_detection_enabled,
     jint root_detection_weight, jint emulator_detection_enabled,
     jint emulator_detection_weight) {
   RaspSecurityPolicy defaults = rasp_security_default_policy();
@@ -1472,6 +1582,17 @@ static RaspSecurityPolicy rasp_policy_from_jni_args(
       rasp_threshold_from_jint(restrict_threshold, defaults.restrict_threshold);
   policy.terminate_threshold =
       rasp_threshold_from_jint(terminate_threshold, defaults.terminate_threshold);
+  policy.debugger_detection_enabled =
+      debugger_detection_enabled == 0 ? 0U : 1U;
+  policy.debugger_detection_weight = rasp_threshold_from_jint(
+      debugger_detection_weight, defaults.debugger_detection_weight);
+  policy.instrumentation_detection_enabled =
+      instrumentation_detection_enabled == 0 ? 0U : 1U;
+  policy.instrumentation_detection_weight = rasp_threshold_from_jint(
+      instrumentation_detection_weight, defaults.instrumentation_detection_weight);
+  policy.memory_integrity_enabled = memory_integrity_enabled == 0 ? 0U : 1U;
+  policy.memory_integrity_weight = rasp_threshold_from_jint(
+      memory_integrity_weight, defaults.memory_integrity_weight);
   policy.root_detection_enabled = root_detection_enabled == 0 ? 0U : 1U;
   policy.root_detection_weight =
       rasp_threshold_from_jint(root_detection_weight, defaults.root_detection_weight);
@@ -1555,6 +1676,7 @@ static int rasp_security_collect_with_policy(
   if (effective_policy->emulator_detection_enabled != 0U) {
     rasp_scan_emulator_state(report, effective_policy->emulator_detection_weight);
   }
+  rasp_apply_runtime_detector_policy(report, effective_policy);
   (void)rasp_security_apply_policy(report, effective_policy);
 
   return 0;
@@ -1723,7 +1845,10 @@ Java_com_rasp_runtime_bootstrap_RaspInitProvider_nativeInitialize(
     jstring runtime_high_risk_action, jstring startup_integrity_action,
     jstring startup_payload_tampering_action, jint package_matches,
     jint certificate_matches, jint payload_matches,
-    jint protected_assets_match, jint root_detection_enabled,
+    jint protected_assets_match, jint debugger_detection_enabled,
+    jint debugger_detection_weight, jint instrumentation_detection_enabled,
+    jint instrumentation_detection_weight, jint memory_integrity_enabled,
+    jint memory_integrity_weight, jint root_detection_enabled,
     jint root_detection_weight, jint emulator_detection_enabled,
     jint emulator_detection_weight) {
   RaspSecurityReport report;
@@ -1734,9 +1859,11 @@ Java_com_rasp_runtime_bootstrap_RaspInitProvider_nativeInitialize(
   policy = rasp_policy_from_jni_args(
       env, report_threshold, warn_threshold, restrict_threshold,
       terminate_threshold, runtime_high_risk_action, startup_integrity_action,
-      startup_payload_tampering_action, root_detection_enabled,
-      root_detection_weight, emulator_detection_enabled,
-      emulator_detection_weight);
+      startup_payload_tampering_action, debugger_detection_enabled,
+      debugger_detection_weight, instrumentation_detection_enabled,
+      instrumentation_detection_weight, memory_integrity_enabled,
+      memory_integrity_weight, root_detection_enabled, root_detection_weight,
+      emulator_detection_enabled, emulator_detection_weight);
 
   if (rasp_security_collect_with_policy(&report, &policy) != 0) {
     rasp_report_init(&report);
@@ -1746,6 +1873,7 @@ Java_com_rasp_runtime_bootstrap_RaspInitProvider_nativeInitialize(
     rasp_scan_java_emulator_build(env, &report,
                                   policy.emulator_detection_weight);
   }
+  rasp_apply_runtime_detector_policy(&report, &policy);
   (void)rasp_security_add_startup_identity_signals(
       &report, package_matches != 0, certificate_matches != 0);
   (void)rasp_security_add_startup_payload_signals(
@@ -1770,7 +1898,10 @@ Java_com_rasp_runtime_bootstrap_RaspInitProvider_nativeMonitorScan(
     JNIEnv *env, jclass clazz, jint report_threshold, jint warn_threshold,
     jint restrict_threshold, jint terminate_threshold,
     jstring runtime_high_risk_action, jstring startup_payload_tampering_action,
-    jint protected_assets_match, jint root_detection_enabled,
+    jint protected_assets_match, jint debugger_detection_enabled,
+    jint debugger_detection_weight, jint instrumentation_detection_enabled,
+    jint instrumentation_detection_weight, jint memory_integrity_enabled,
+    jint memory_integrity_weight, jint root_detection_enabled,
     jint root_detection_weight, jint emulator_detection_enabled,
     jint emulator_detection_weight) {
   RaspSecurityReport report;
@@ -1780,9 +1911,11 @@ Java_com_rasp_runtime_bootstrap_RaspInitProvider_nativeMonitorScan(
   policy = rasp_policy_from_jni_args(
       env, report_threshold, warn_threshold, restrict_threshold,
       terminate_threshold, runtime_high_risk_action, NULL,
-      startup_payload_tampering_action, root_detection_enabled,
-      root_detection_weight, emulator_detection_enabled,
-      emulator_detection_weight);
+      startup_payload_tampering_action, debugger_detection_enabled,
+      debugger_detection_weight, instrumentation_detection_enabled,
+      instrumentation_detection_weight, memory_integrity_enabled,
+      memory_integrity_weight, root_detection_enabled, root_detection_weight,
+      emulator_detection_enabled, emulator_detection_weight);
 
   if (rasp_security_collect_with_policy(&report, &policy) != 0) {
     rasp_report_init(&report);
@@ -1793,6 +1926,7 @@ Java_com_rasp_runtime_bootstrap_RaspInitProvider_nativeMonitorScan(
     rasp_scan_java_emulator_build(env, &report,
                                   policy.emulator_detection_weight);
   }
+  rasp_apply_runtime_detector_policy(&report, &policy);
   (void)rasp_security_add_runtime_payload_signals(
       &report, protected_assets_match != 0);
   (void)rasp_security_apply_policy(&report, &policy);
@@ -2110,6 +2244,15 @@ int rasp_security_test_scan_emulator_cpuinfo_text(const char *text,
     }
   }
   (void)rasp_security_apply_policy(report, NULL);
+  return 0;
+}
+
+int rasp_security_test_apply_runtime_detector_policy(
+    RaspSecurityReport *report, const RaspSecurityPolicy *policy) {
+  if (report == NULL || policy == NULL) {
+    return -1;
+  }
+  rasp_apply_runtime_detector_policy(report, policy);
   return 0;
 }
 #endif

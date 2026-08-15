@@ -13,6 +13,15 @@ static int has_signal(const RaspSecurityReport *report, const char *id) {
   return 0;
 }
 
+static uint8_t signal_weight(const RaspSecurityReport *report, const char *id) {
+  for (uint32_t index = 0U; index < report->signal_count; index++) {
+    if (strcmp(report->signals[index].id, id) == 0) {
+      return report->signals[index].weight;
+    }
+  }
+  return 0U;
+}
+
 static void detects_instrumentation_maps(void) {
   static const char maps[] =
       "70000000-70100000 r-xp 00000000 fd:00 1 /data/app/libFRIDA-gadget.so\n"
@@ -100,6 +109,40 @@ static void detects_suspicious_environment(void) {
   assert(has_signal(&report, "instrumentation.suspicious_environment"));
   assert(report.risk_score == 25U);
   assert(report.action == RASP_SECURITY_ACTION_REPORT);
+}
+
+static void runtime_policy_disables_instrumentation_signals(void) {
+  static const char maps[] =
+      "70000000-70100000 r-xp 00000000 fd:00 1 /data/app/libfrida-gadget.so\n"
+      "70200000-70300000 rwxp 00000000 00:00 0 [anon:jit-cache]\n";
+  RaspSecurityPolicy policy = rasp_security_default_policy();
+  RaspSecurityReport report;
+
+  policy.instrumentation_detection_enabled = 0U;
+
+  assert(rasp_security_test_scan_maps_text(maps, &report) == 0);
+  assert(rasp_security_test_apply_runtime_detector_policy(&report, &policy) == 0);
+  assert(rasp_security_apply_policy(&report, &policy) == 0);
+  assert(!has_signal(&report, "instrumentation.frida_library"));
+  assert(has_signal(&report, "memory.writable_executable_map"));
+  assert(report.risk_score == 15U);
+  assert(report.action == RASP_SECURITY_ACTION_ALLOW);
+}
+
+static void runtime_policy_caps_debugger_signal_weight(void) {
+  RaspSecurityPolicy policy = rasp_security_default_policy();
+  RaspSecurityReport report;
+
+  policy.debugger_detection_weight = 10U;
+
+  assert(rasp_security_test_scan_status_text("Name:\tapp\nTracerPid:\t42\n",
+                                             &report) == 0);
+  assert(rasp_security_test_apply_runtime_detector_policy(&report, &policy) == 0);
+  assert(rasp_security_apply_policy(&report, &policy) == 0);
+  assert(has_signal(&report, "debugger.tracer_pid"));
+  assert(signal_weight(&report, "debugger.tracer_pid") == 10U);
+  assert(report.risk_score == 10U);
+  assert(report.action == RASP_SECURITY_ACTION_ALLOW);
 }
 
 static void detects_root_paths(void) {
@@ -246,6 +289,8 @@ int main(void) {
   detects_frida_default_ports();
   detects_frida_unix_socket();
   detects_suspicious_environment();
+  runtime_policy_disables_instrumentation_signals();
+  runtime_policy_caps_debugger_signal_weight();
   detects_root_paths();
   detects_root_properties();
   detects_root_mounts();

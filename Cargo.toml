@@ -12,6 +12,7 @@ members = [
   "crates/android-signing",
   "crates/payload-pack",
   "crates/runtime-test",
+  "integration-tests",
 ]
 
 [workspace.package]

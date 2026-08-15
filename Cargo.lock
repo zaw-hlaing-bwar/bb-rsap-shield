@@ -510,6 +510,17 @@ name = "rasp-core"
 version = "0.1.0"
 
 [[package]]
+name = "rasp-integration-tests"
+version = "0.1.0"
+dependencies = [
+ "android-apk",
+ "android-axml",
+ "artifact-inspector",
+ "serde_json",
+ "zip",
+]
+
+[[package]]
 name = "rasp-report"
 version = "0.1.0"
 dependencies = [

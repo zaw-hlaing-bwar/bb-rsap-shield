@@ -32,6 +32,12 @@ typedef struct RaspSecurityPolicy {
   RaspSecurityAction runtime_high_risk_action;
   RaspSecurityAction startup_integrity_action;
   RaspSecurityAction startup_payload_tampering_action;
+  uint8_t debugger_detection_enabled;
+  uint8_t debugger_detection_weight;
+  uint8_t instrumentation_detection_enabled;
+  uint8_t instrumentation_detection_weight;
+  uint8_t memory_integrity_enabled;
+  uint8_t memory_integrity_weight;
   uint8_t root_detection_enabled;
   uint8_t root_detection_weight;
   uint8_t emulator_detection_enabled;
@@ -96,6 +102,8 @@ int rasp_security_test_scan_emulator_properties_text(
     const char *text, RaspSecurityReport *report);
 int rasp_security_test_scan_emulator_cpuinfo_text(const char *text,
                                                   RaspSecurityReport *report);
+int rasp_security_test_apply_runtime_detector_policy(
+    RaspSecurityReport *report, const RaspSecurityPolicy *policy);
 #endif
 
 #ifdef __cplusplus

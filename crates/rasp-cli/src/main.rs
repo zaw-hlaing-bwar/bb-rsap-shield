@@ -1603,6 +1603,18 @@ fn integrity_runtime_policy(config: &RaspConfig) -> IntegrityRuntimePolicy {
             monitor_background_state: config.runtime.monitor_background_state,
         },
         detections: IntegrityRuntimeDetections {
+            debugger: IntegrityDetectionRule {
+                enabled: config.protections.debugger_detection.enabled,
+                weight: config.protections.debugger_detection.weight,
+            },
+            instrumentation: IntegrityDetectionRule {
+                enabled: config.protections.instrumentation_detection.enabled,
+                weight: config.protections.instrumentation_detection.weight,
+            },
+            memory: IntegrityDetectionRule {
+                enabled: config.protections.memory_integrity.enabled,
+                weight: config.protections.memory_integrity.weight,
+            },
             root: IntegrityDetectionRule {
                 enabled: config.protections.root_detection.enabled,
                 weight: config.protections.root_detection.weight,
@@ -2082,8 +2094,8 @@ fn format_path_with_result(path: &Path, error: Option<&std::io::Error>) -> Strin
 #[cfg(test)]
 mod tests {
     use super::{
-        default_payload_maximum_cli_version, default_signed_apk_path, is_hex_sha256,
-        parse_native_library_args, protected_asset_paths, sibling_json_path,
+        default_payload_maximum_cli_version, default_signed_apk_path, integrity_runtime_policy,
+        is_hex_sha256, parse_native_library_args, protected_asset_paths, sibling_json_path,
     };
     use android_apk::IntegrityProtectedAssetKind;
     use artifact_inspector::{FlutterInfo, InspectionResult};
@@ -2145,6 +2157,25 @@ mod tests {
     #[test]
     fn derives_default_payload_cli_major_range() {
         assert_eq!(default_payload_maximum_cli_version(), "0.x");
+    }
+
+    #[test]
+    fn maps_runtime_detection_policy_from_config() {
+        let config = parse_config(include_str!("../../../fixtures/rasp.config.example.json"))
+            .expect("example config should parse");
+
+        let policy = integrity_runtime_policy(&config);
+
+        assert!(policy.detections.debugger.enabled);
+        assert_eq!(policy.detections.debugger.weight, 40);
+        assert!(policy.detections.instrumentation.enabled);
+        assert_eq!(policy.detections.instrumentation.weight, 60);
+        assert!(policy.detections.memory.enabled);
+        assert_eq!(policy.detections.memory.weight, 60);
+        assert!(policy.detections.root.enabled);
+        assert_eq!(policy.detections.root.weight, 20);
+        assert!(!policy.detections.emulator.enabled);
+        assert_eq!(policy.detections.emulator.weight, 10);
     }
 
     #[test]

@@ -56,6 +56,18 @@ pub fn default_runtime_monitoring() -> IntegrityRuntimeMonitoring {
 
 pub fn default_runtime_detections() -> IntegrityRuntimeDetections {
     IntegrityRuntimeDetections {
+        debugger: IntegrityDetectionRule {
+            enabled: true,
+            weight: 40,
+        },
+        instrumentation: IntegrityDetectionRule {
+            enabled: true,
+            weight: 60,
+        },
+        memory: IntegrityDetectionRule {
+            enabled: true,
+            weight: 60,
+        },
         root: IntegrityDetectionRule {
             enabled: true,
             weight: 20,
@@ -163,6 +175,9 @@ pub struct IntegrityRuntimeMonitoring {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct IntegrityRuntimeDetections {
+    pub debugger: IntegrityDetectionRule,
+    pub instrumentation: IntegrityDetectionRule,
+    pub memory: IntegrityDetectionRule,
     pub root: IntegrityDetectionRule,
     pub emulator: IntegrityDetectionRule,
 }
@@ -1035,6 +1050,40 @@ mod tests {
             IntegrityRiskAction::Terminate
         );
         assert!(integrity_manifest.policy.runtime.monitoring.enabled);
+        assert!(
+            integrity_manifest
+                .policy
+                .runtime
+                .detections
+                .debugger
+                .enabled
+        );
+        assert_eq!(
+            integrity_manifest.policy.runtime.detections.debugger.weight,
+            40
+        );
+        assert!(
+            integrity_manifest
+                .policy
+                .runtime
+                .detections
+                .instrumentation
+                .enabled
+        );
+        assert_eq!(
+            integrity_manifest
+                .policy
+                .runtime
+                .detections
+                .instrumentation
+                .weight,
+            60
+        );
+        assert!(integrity_manifest.policy.runtime.detections.memory.enabled);
+        assert_eq!(
+            integrity_manifest.policy.runtime.detections.memory.weight,
+            60
+        );
         assert_eq!(
             integrity_manifest
                 .policy
