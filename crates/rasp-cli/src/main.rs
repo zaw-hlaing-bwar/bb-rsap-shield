@@ -18,8 +18,8 @@ use android_signing::{
 use artifact_inspector::{inspect_apk, ApkSignatureScheme, InspectionResult};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use payload_pack::{
-    build_payload_pack, load_payload_pack_verified, PayloadPackBuildOptions, PayloadPackError,
-    PayloadSigningKey, PayloadVerificationKey,
+    build_payload_pack, load_payload_pack_verified, PayloadPack, PayloadPackBuildOptions,
+    PayloadPackError, PayloadSigningKey, PayloadVerificationKey,
 };
 use rasp_config::{
     is_valid_env_var_name, load_config, RaspConfig, RiskAction, CONFIG_SCHEMA_VERSION,
@@ -242,11 +242,6 @@ fn shield(args: ShieldArgs) -> RaspResult<ExitCode> {
         &verification_key,
     )
     .map_err(|error| RaspError::new(ExitCode::PayloadSignatureFailure, error.to_string()))?;
-    let payload_files = PayloadFiles {
-        bootstrap_dex_path: payload_pack.bootstrap_dex_path.clone(),
-        abi_libraries: payload_pack.abi_libraries.clone(),
-    };
-
     let input_artifact = artifact_descriptor(&args.input)?;
     let input_inspection = inspect_apk(&args.input).map_err(|error| {
         RaspError::new(
@@ -254,6 +249,8 @@ fn shield(args: ShieldArgs) -> RaspResult<ExitCode> {
             format!("failed to inspect input APK before shielding: {error}"),
         )
     })?;
+    validate_shield_compatibility(&config, &input_inspection, &payload_pack.abi_libraries)?;
+    let payload_files = payload_files_for_config(&payload_pack, &config)?;
     let expected_certificate_sha256 =
         expected_certificate_digests(&config, args.expected_cert_sha256.as_deref())?;
     let rewrite_options = ApkRewriteOptions {
@@ -1445,6 +1442,113 @@ fn validate_payload_pack_args(args: &ShieldArgs) -> RaspResult<()> {
     }
 }
 
+fn validate_shield_compatibility(
+    config: &RaspConfig,
+    inspection: &InspectionResult,
+    payload_abi_libraries: &BTreeMap<String, PathBuf>,
+) -> RaspResult<()> {
+    let mut errors = Vec::new();
+
+    if config.output.fail_on_warning && !inspection.compatibility_warnings.is_empty() {
+        errors.push(format!(
+            "input APK has compatibility warnings and output.fail_on_warning is true: {}",
+            inspection.compatibility_warnings.join("; ")
+        ));
+    }
+
+    let configured_abis = config
+        .android
+        .supported_abis
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if !configured_abis.is_empty() {
+        let payload_abis = payload_abi_libraries
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        for abi in configured_abis.difference(&payload_abis) {
+            errors.push(format!(
+                "payload pack does not contain configured ABI: {abi}"
+            ));
+        }
+
+        let input_abis = inspection
+            .supported_abis
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        if !input_abis.is_empty() && configured_abis.is_disjoint(&input_abis) {
+            errors.push(format!(
+                "configured supported ABIs ({}) do not overlap input APK ABIs ({})",
+                join_set(&configured_abis),
+                join_set(&input_abis)
+            ));
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(RaspError::new(
+            ExitCode::CompatibilityValidationFailure,
+            errors.join("; "),
+        ))
+    }
+}
+
+fn payload_files_for_config(
+    payload_pack: &PayloadPack,
+    config: &RaspConfig,
+) -> RaspResult<PayloadFiles> {
+    let abi_libraries = selected_payload_abi_libraries(
+        &payload_pack.abi_libraries,
+        &config.android.supported_abis,
+    )?;
+
+    Ok(PayloadFiles {
+        bootstrap_dex_path: payload_pack.bootstrap_dex_path.clone(),
+        abi_libraries,
+    })
+}
+
+fn selected_payload_abi_libraries(
+    payload_abi_libraries: &BTreeMap<String, PathBuf>,
+    configured_abis: &[String],
+) -> RaspResult<BTreeMap<String, PathBuf>> {
+    if configured_abis.is_empty() {
+        return Ok(payload_abi_libraries.clone());
+    }
+
+    let mut selected = BTreeMap::new();
+    let mut missing = Vec::new();
+    for abi in configured_abis {
+        match payload_abi_libraries.get(abi) {
+            Some(path) => {
+                selected.insert(abi.clone(), path.clone());
+            }
+            None => missing.push(abi.clone()),
+        }
+    }
+
+    if missing.is_empty() {
+        Ok(selected)
+    } else {
+        Err(RaspError::new(
+            ExitCode::CompatibilityValidationFailure,
+            format!(
+                "payload pack does not contain configured ABI{}: {}",
+                if missing.len() == 1 { "" } else { "s" },
+                missing.join(", ")
+            ),
+        ))
+    }
+}
+
+fn join_set(values: &BTreeSet<String>) -> String {
+    values.iter().cloned().collect::<Vec<_>>().join(", ")
+}
+
 fn apk_rewrite_error_into_rasp_error(error: ApkRewriteError) -> RaspError {
     let exit_code = match error {
         ApkRewriteError::Validation(_)
@@ -2095,11 +2199,14 @@ fn format_path_with_result(path: &Path, error: Option<&std::io::Error>) -> Strin
 mod tests {
     use super::{
         default_payload_maximum_cli_version, default_signed_apk_path, integrity_runtime_policy,
-        is_hex_sha256, parse_native_library_args, protected_asset_paths, sibling_json_path,
+        is_hex_sha256, parse_native_library_args, protected_asset_paths,
+        selected_payload_abi_libraries, sibling_json_path, validate_shield_compatibility,
     };
     use android_apk::IntegrityProtectedAssetKind;
     use artifact_inspector::{FlutterInfo, InspectionResult};
     use rasp_config::parse_config;
+    use rasp_core::ExitCode;
+    use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
 
     #[test]
@@ -2179,6 +2286,63 @@ mod tests {
     }
 
     #[test]
+    fn fail_on_warning_rejects_compatibility_warnings_before_shielding() {
+        let mut config = example_config();
+        config.output.fail_on_warning = true;
+        let mut inspection = InspectionResult::unsupported(PathBuf::from("app.apk"));
+        inspection
+            .compatibility_warnings
+            .push("targetSdkVersion is outside the Release 1.0 compatibility range".to_string());
+        let payload_abis = payload_abi_libraries(&["arm64-v8a", "armeabi-v7a"]);
+
+        let error = validate_shield_compatibility(&config, &inspection, &payload_abis)
+            .expect_err("warnings should fail when configured");
+
+        assert_eq!(error.exit_code(), ExitCode::CompatibilityValidationFailure);
+        assert!(error.message().contains("fail_on_warning"));
+        assert!(error.message().contains("targetSdkVersion"));
+    }
+
+    #[test]
+    fn rejects_configured_abis_that_do_not_overlap_input_apk_abis() {
+        let mut config = example_config();
+        config.android.supported_abis = vec!["x86_64".to_string()];
+        let mut inspection = InspectionResult::unsupported(PathBuf::from("app.apk"));
+        inspection.supported_abis = vec!["arm64-v8a".to_string()];
+        let payload_abis = payload_abi_libraries(&["x86_64"]);
+
+        let error = validate_shield_compatibility(&config, &inspection, &payload_abis)
+            .expect_err("ABI mismatch should fail");
+
+        assert_eq!(error.exit_code(), ExitCode::CompatibilityValidationFailure);
+        assert!(error.message().contains("do not overlap"));
+    }
+
+    #[test]
+    fn selects_only_configured_payload_abis() {
+        let payload_abis = payload_abi_libraries(&["arm64-v8a", "armeabi-v7a", "x86_64"]);
+
+        let selected = selected_payload_abi_libraries(&payload_abis, &["arm64-v8a".to_string()])
+            .expect("configured ABI is present");
+
+        assert_eq!(
+            selected.keys().cloned().collect::<Vec<_>>(),
+            vec!["arm64-v8a".to_string()]
+        );
+    }
+
+    #[test]
+    fn rejects_missing_configured_payload_abis() {
+        let payload_abis = payload_abi_libraries(&["arm64-v8a"]);
+
+        let error = selected_payload_abi_libraries(&payload_abis, &["x86_64".to_string()])
+            .expect_err("missing configured ABI should fail");
+
+        assert_eq!(error.exit_code(), ExitCode::CompatibilityValidationFailure);
+        assert!(error.message().contains("x86_64"));
+    }
+
+    #[test]
     fn auto_selects_flutter_protected_assets_from_inspection() {
         let config = parse_config(
             r#"{
@@ -2239,5 +2403,21 @@ mod tests {
             paths.get("assets/flutter_assets/AssetManifest.json"),
             Some(&IntegrityProtectedAssetKind::FlutterAsset)
         );
+    }
+
+    fn example_config() -> rasp_config::RaspConfig {
+        parse_config(include_str!("../../../fixtures/rasp.config.example.json"))
+            .expect("example config should parse")
+    }
+
+    fn payload_abi_libraries(abis: &[&str]) -> BTreeMap<String, PathBuf> {
+        abis.iter()
+            .map(|abi| {
+                (
+                    (*abi).to_string(),
+                    PathBuf::from(format!("{abi}/libsecurity.so")),
+                )
+            })
+            .collect()
     }
 }
