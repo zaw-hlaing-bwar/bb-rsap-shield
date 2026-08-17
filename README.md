@@ -537,7 +537,7 @@ Offline behavior values:
 | --- | --- | --- |
 | `initializer` | Yes | Must be `CONTENT_PROVIDER`. |
 | `supported_abis` | Yes | ABI list to inject from the payload pack. Supported values: `arm64-v8a`, `armeabi-v7a`, `x86_64`. When non-empty, shielding fails if the payload pack does not contain a configured ABI or the configured ABIs do not overlap the input APK's native ABIs. |
-| `initialize_processes` | Yes | Process labels accepted by the config schema. The current bootstrap provider is injected at the APK manifest level. |
+| `initialize_processes` | Yes | Must be `["main"]` for Release 1.0. Secondary-process-specific initialization is not supported yet. |
 | `minimum_sdk` | Yes | Must be at least `23`. |
 | `certificate_sha256` | Yes | One or more expected signing certificate digests. Each value must be a 64-character SHA-256 hex digest or `CURRENT_SIGNING_CERTIFICATE_SHA256`. |
 | `preserve_signature_lineage` | No | Included in external signing request metadata. Defaults to `false`. |

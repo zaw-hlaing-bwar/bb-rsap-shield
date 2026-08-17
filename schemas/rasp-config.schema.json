@@ -143,7 +143,9 @@
         },
         "initialize_processes": {
           "type": "array",
-          "items": { "type": "string", "minLength": 1 }
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "const": "main" }
         },
         "minimum_sdk": { "type": "integer", "minimum": 23 },
         "certificate_sha256": {

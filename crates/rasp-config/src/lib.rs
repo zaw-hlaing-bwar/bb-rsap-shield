@@ -379,6 +379,17 @@ pub fn validate_config(config: &RaspConfig) -> Result<(), ConfigError> {
         }
     }
 
+    if config.android.initialize_processes.is_empty() {
+        errors.push("android.initialize_processes must contain \"main\"".to_string());
+    }
+    for process in &config.android.initialize_processes {
+        if process != "main" {
+            errors.push(format!(
+                "android.initialize_processes supports only \"main\" for Release 1.0: {process}"
+            ));
+        }
+    }
+
     if config.telemetry.enabled {
         let endpoint = config.telemetry.endpoint.as_deref().unwrap_or_default();
         if endpoint.trim().is_empty() {
@@ -571,6 +582,26 @@ mod tests {
         );
         let error = parse_config(&invalid).expect_err("raw memory should fail");
         assert!(error.to_string().contains("include_raw_memory"));
+    }
+
+    #[test]
+    fn rejects_empty_initialize_processes() {
+        let invalid = VALID_CONFIG.replace(
+            "\"initialize_processes\": [\"main\"]",
+            "\"initialize_processes\": []",
+        );
+        let error = parse_config(&invalid).expect_err("empty process list should fail");
+        assert!(error.to_string().contains("initialize_processes"));
+    }
+
+    #[test]
+    fn rejects_unsupported_initialize_processes() {
+        let invalid = VALID_CONFIG.replace(
+            "\"initialize_processes\": [\"main\"]",
+            "\"initialize_processes\": [\"main\", \"remote\"]",
+        );
+        let error = parse_config(&invalid).expect_err("remote process should fail");
+        assert!(error.to_string().contains("supports only \"main\""));
     }
 
     #[test]
