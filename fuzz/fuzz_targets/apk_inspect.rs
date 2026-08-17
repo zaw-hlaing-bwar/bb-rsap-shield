@@ -3,11 +3,9 @@
 mod support;
 
 use artifact_inspector::inspect_apk;
+use libfuzzer_sys::fuzz_target;
 
-#[no_mangle]
-pub extern "C" fn LLVMFuzzerTestOneInput(data: *const u8, size: usize) -> i32 {
-    support::run_fuzzer(data, size, fuzz)
-}
+fuzz_target!(|data: &[u8]| fuzz(data));
 
 fn fuzz(data: &[u8]) {
     let package_name = support::package_name(data);

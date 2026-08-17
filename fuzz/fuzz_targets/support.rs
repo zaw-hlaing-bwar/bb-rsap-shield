@@ -467,8 +467,14 @@ impl<'a> ByteCursor<'a> {
             return &[];
         }
 
+        let selector = self.data[self.offset];
+        self.offset = self.offset.saturating_add(1);
+        if self.offset >= self.data.len() {
+            return &[];
+        }
+
         let available = self.data.len() - self.offset;
-        let len = usize::from(self.byte()) % (max_len.min(available) + 1);
+        let len = usize::from(selector) % (max_len.min(available) + 1);
         let start = self.offset;
         let end = start + len;
         self.offset = end;

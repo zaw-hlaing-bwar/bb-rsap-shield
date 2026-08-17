@@ -33,4 +33,6 @@ cargo check --manifest-path fuzz/Cargo.toml --bins --locked
 ```
 
 Crash artifacts are written under `fuzz/artifacts/`. Add minimized regressions
-to the relevant crate tests before deleting the artifact.
+to the relevant crate tests before deleting the artifact. Local generated corpus
+state is written under `fuzz/corpus/` and is intentionally ignored; promote only
+curated seeds or regression tests into source control.
