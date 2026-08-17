@@ -1,0 +1,45 @@
+[package]
+name = "bb-rsap-shield-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[workspace]
+members = ["."]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+android-apk = { path = "../crates/android-apk" }
+android-axml = { path = "../crates/android-axml" }
+artifact-inspector = { path = "../crates/artifact-inspector" }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[[bin]]
+name = "axml_parse"
+path = "fuzz_targets/axml_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "axml_provider_injection"
+path = "fuzz_targets/axml_provider_injection.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "apk_inspect"
+path = "fuzz_targets/apk_inspect.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "apk_rewrite"
+path = "fuzz_targets/apk_rewrite.rs"
+test = false
+doc = false
+bench = false

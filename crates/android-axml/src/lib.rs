@@ -473,6 +473,9 @@ fn parse_string_pool(
     if header.header_size < 28 {
         return Err(AxmlError::Invalid("string pool header is too small"));
     }
+    if header.header_size as u32 > header.size {
+        return Err(AxmlError::Invalid("string pool header exceeds chunk size"));
+    }
 
     let string_count = read_u32(bytes, offset + 8)? as usize;
     let flags = read_u32(bytes, offset + 16)?;
@@ -484,6 +487,18 @@ fn parse_string_pool(
         .checked_add(strings_start)
         .ok_or(AxmlError::Invalid("string data offset overflow"))?;
     let chunk_end = checked_chunk_end(bytes, offset, header.size)?;
+    let string_offsets_len = string_count
+        .checked_mul(4)
+        .ok_or(AxmlError::Invalid("string offsets size overflow"))?;
+    let string_offsets_end = offsets_start
+        .checked_add(string_offsets_len)
+        .ok_or(AxmlError::Invalid("string offsets overflow"))?;
+    if string_offsets_end > chunk_end {
+        return Err(AxmlError::Truncated("string offsets"));
+    }
+    if string_data_start > chunk_end {
+        return Err(AxmlError::Truncated("string data"));
+    }
 
     let mut strings = Vec::with_capacity(string_count);
     for index in 0..string_count {
@@ -709,16 +724,13 @@ fn parse_string_pool_details(
                 .ok_or(AxmlError::Invalid("string offsets size overflow"))?,
         )
         .ok_or(AxmlError::Invalid("style offsets overflow"))?;
-    require_len(
-        bytes,
-        offsets_start,
-        string_count
-            .checked_add(style_count)
-            .and_then(|count| count.checked_mul(4))
-            .ok_or(AxmlError::Invalid("string pool offsets size overflow"))?,
-        "string pool offsets",
-    )?;
-    if style_offsets_start > chunk_end {
+    let style_offsets_len = style_count
+        .checked_mul(4)
+        .ok_or(AxmlError::Invalid("style offsets size overflow"))?;
+    let style_offsets_end = style_offsets_start
+        .checked_add(style_offsets_len)
+        .ok_or(AxmlError::Invalid("style offsets overflow"))?;
+    if style_offsets_end > chunk_end {
         return Err(AxmlError::Truncated("style offsets"));
     }
 
@@ -1220,6 +1232,25 @@ mod tests {
             .contains("bootstrap provider already exists"));
     }
 
+    #[test]
+    fn rejects_string_count_that_exceeds_chunk_offsets_before_allocating() {
+        let manifest = xml_with_chunk(malformed_string_pool(u32::MAX, 0, 28));
+
+        let error = parse_manifest(&manifest).expect_err("string offsets should fail");
+
+        assert!(error.to_string().contains("string offsets"));
+    }
+
+    #[test]
+    fn rejects_style_count_that_exceeds_chunk_offsets_before_allocating() {
+        let manifest = xml_with_chunk(malformed_string_pool(0, 1, 28));
+
+        let error =
+            inject_manifest_provider(&manifest, &test_provider()).expect_err("style offsets fail");
+
+        assert!(error.to_string().contains("style offsets"));
+    }
+
     #[derive(Debug, Clone, Copy)]
     struct TestAttribute {
         namespace_index: u32,
@@ -1236,6 +1267,31 @@ mod tests {
             exported: false,
             init_order: Some(1000),
         }
+    }
+
+    fn xml_with_chunk(chunk: Vec<u8>) -> Vec<u8> {
+        let mut output = Vec::new();
+        write_u16(&mut output, RES_XML_TYPE);
+        write_u16(&mut output, 8);
+        write_u32(
+            &mut output,
+            to_u32(8 + chunk.len(), "test XML size").unwrap(),
+        );
+        output.extend_from_slice(&chunk);
+        output
+    }
+
+    fn malformed_string_pool(string_count: u32, style_count: u32, chunk_size: u32) -> Vec<u8> {
+        let mut output = Vec::new();
+        write_u16(&mut output, RES_STRING_POOL_TYPE);
+        write_u16(&mut output, 28);
+        write_u32(&mut output, chunk_size);
+        write_u32(&mut output, string_count);
+        write_u32(&mut output, style_count);
+        write_u32(&mut output, UTF8_FLAG);
+        write_u32(&mut output, 28);
+        write_u32(&mut output, if style_count == 0 { 0 } else { 28 });
+        output
     }
 
     fn minimal_manifest(package_name: &str) -> Vec<u8> {

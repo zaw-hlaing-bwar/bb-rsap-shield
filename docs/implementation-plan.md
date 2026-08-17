@@ -353,7 +353,7 @@ Goal: broaden from a working path to a release-quality tool.
 - Add large-APK streaming tests.
 - Add malformed APK tests.
 - Add ZIP-slip and decompression-bomb tests.
-- Add fuzzing for ZIP, AXML, and manifest mutation code.
+- Run sustained fuzzing campaigns for ZIP, AXML, manifest mutation, inspection, and rewrite code.
 - Add SBOM generation.
 - Add GitHub Actions, Jenkins, and Bitrise examples.
 - Add operational documentation.
@@ -522,6 +522,9 @@ Current status:
 - Development payload-pack assembly from current source is implemented and can replace the old
   placeholder smoke pack. Release-grade payload-pack production hardening still needs CI release
   packaging and production key custody/signing procedures.
+- Initial `cargo-fuzz` targets are implemented for AXML parsing, provider injection, APK
+  inspection, and APK rewrite. `scripts/check.sh` compile-checks the harnesses; release hardening
+  still needs sustained fuzz campaigns and regression triage.
 
 ### Milestone 6: Release Candidate
 
