@@ -88,6 +88,7 @@ int rasp_security_test_scan_status_text(const char *text, RaspSecurityReport *re
 int rasp_security_test_scan_thread_name(const char *name, RaspSecurityReport *report);
 int rasp_security_test_scan_tcp_text(const char *text, RaspSecurityReport *report);
 int rasp_security_test_scan_unix_text(const char *text, RaspSecurityReport *report);
+int rasp_security_test_proc_net_scan_disabled_after_error(int error_code);
 int rasp_security_test_scan_environment_text(const char *text,
                                              RaspSecurityReport *report);
 int rasp_security_test_scan_root_paths_text(const char *text,

@@ -155,6 +155,9 @@ hex characters:
 export RASP_PAYLOAD_SIGNING_KEY_HEX="$(openssl rand -hex 32)"
 ```
 
+For production releases, follow `docs/payload-signing.md` and store the seed in
+an approved secret manager or protected CI secret.
+
 Build the bootstrap DEX and native runtime from this repository:
 
 ```sh
@@ -349,8 +352,12 @@ Usage: rasp-cli runtime-smoke [OPTIONS] --input <INPUT>
 | `--report <REPORT>` | No | none | JSON runtime smoke-test report path. |
 
 The smoke test checks ADB device state, installs with `adb install -r -t`,
-launches the app, checks that the process is running, and uninstalls unless
+clears `logcat`, launches the app, checks that the process is running, fails if
+the bootstrap reports `startup_budget_exceeded=true`, and uninstalls unless
 `--no-uninstall` is passed.
+
+The Android bootstrap logs `startup_duration_ms`, `startup_budget_ms`, and
+`startup_budget_exceeded` with the `RaspShield` tag during provider startup.
 
 ### `rasp-cli build-payload-pack`
 
@@ -384,7 +391,8 @@ payload-pack/
   licenses/NOTICE.txt
 ```
 
-Only the ABI directories you provide are written. `manifest.json` contains
+Only the ABI directories you provide are written. Each native `libsecurity.so`
+must be a valid ELF file no larger than 1.5 MiB. `manifest.json` contains
 SHA-256 digests for every payload file, and `signature.ed25519` signs the raw
 manifest bytes.
 
@@ -441,6 +449,18 @@ Environment variables accepted by the script:
   `RASP_PAYLOAD_ABIS`, `RASP_ANDROID_MIN_SDK`,
   `RASP_PAYLOAD_SIGNING_KEY_ENV`, `RASP_PAYLOAD_MINIMUM_CLI_VERSION`, and
   `RASP_PAYLOAD_MAXIMUM_CLI_VERSION`: defaults for matching script options.
+
+### `rasp-cli verify-payload-pack`
+
+Verifies a signed payload-pack directory with its Ed25519 public key.
+
+```text
+Usage: rasp-cli verify-payload-pack --payload-pack <PAYLOAD_PACK> --payload-signing-public-key-hex <PAYLOAD_SIGNING_PUBLIC_KEY_HEX>
+```
+
+Use this in release CI after building or downloading a payload pack. It checks
+manifest metadata, required payload files, DEX/ELF file magic, native library
+size limits, SHA-256 file digests, and `signature.ed25519`.
 
 ## Configuration Reference
 
@@ -609,6 +629,7 @@ Useful local checks:
 ```sh
 bash scripts/check.sh
 bash scripts/check-native.sh
+scripts/fuzz-campaign.sh --seconds 300
 ```
 
 Architecture and planning docs:
@@ -617,3 +638,4 @@ Architecture and planning docs:
 - `docs/threat-model.md`
 - `docs/implementation-plan.md`
 - `docs/release-checklist.md`
+- `docs/payload-signing.md`

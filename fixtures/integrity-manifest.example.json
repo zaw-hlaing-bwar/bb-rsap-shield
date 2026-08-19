@@ -1,0 +1,95 @@
+{
+  "schema_version": 1,
+  "manifest_type": "RASP_SHIELD_ANDROID_INTEGRITY",
+  "build_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "package_name": "com.example.mobile",
+  "application": {
+    "profile": "banking-strict",
+    "build_environment": "production",
+    "expected_package_name": "com.example.mobile"
+  },
+  "policy": {
+    "digest_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "runtime": {
+      "thresholds": {
+        "report": 20,
+        "warn": 40,
+        "restrict": 70,
+        "terminate": 100
+      },
+      "startup_budget_ms": 50,
+      "runtime_high_risk_action": "REPORT",
+      "startup_integrity_action": "TERMINATE",
+      "startup_payload_tampering_action": "TERMINATE",
+      "monitoring": {
+        "enabled": true,
+        "scan_interval_minimum_ms": 5000,
+        "scan_interval_maximum_ms": 15000,
+        "deep_scan_on_suspicion": true,
+        "monitor_background_state": false
+      },
+      "detections": {
+        "debugger": {
+          "enabled": true,
+          "weight": 40
+        },
+        "instrumentation": {
+          "enabled": true,
+          "weight": 60
+        },
+        "memory": {
+          "enabled": true,
+          "weight": 60
+        },
+        "root": {
+          "enabled": true,
+          "weight": 20
+        },
+        "emulator": {
+          "enabled": false,
+          "weight": 10
+        }
+      }
+    }
+  },
+  "android": {
+    "expected_certificate_sha256": [
+      "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    ]
+  },
+  "provider": {
+    "name": "com.example.rasp.RaspInitProvider",
+    "authorities": "com.example.mobile.raspinit",
+    "exported": false,
+    "init_order": 100
+  },
+  "payload": {
+    "version": "2026.08.05-dev",
+    "files": {
+      "bootstrap.dex": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "arm64-v8a/libsecurity.so": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    }
+  },
+  "protected_assets": [
+    {
+      "path": "classes2.dex",
+      "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "kind": "BOOTSTRAP_DEX"
+    },
+    {
+      "path": "lib/arm64-v8a/libsecurity.so",
+      "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "kind": "NATIVE_LIBRARY"
+    }
+  ],
+  "apk_inventory": {
+    "entry_count": 8,
+    "entry_set_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "executable_entry_count": 2,
+    "executable_entry_set_sha256": "9999999999999999999999999999999999999999999999999999999999999999"
+  },
+  "generated_by": {
+    "name": "rasp-cli",
+    "version": "0.1.0"
+  }
+}

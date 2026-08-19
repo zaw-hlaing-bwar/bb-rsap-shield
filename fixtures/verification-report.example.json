@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "result": "PASS",
+  "input": {
+    "path": "app-release.apk",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "size_bytes": 4096
+  },
+  "application": {
+    "package_name": "com.example.mobile",
+    "provider_name": "com.example.rasp.RaspInitProvider",
+    "provider_authorities": "com.example.mobile.raspinit"
+  },
+  "payload": {
+    "integrity_manifest_entry": "assets/rasp-shield/integrity-manifest.json",
+    "protected_assets": [
+      "classes2.dex",
+      "lib/arm64-v8a/libsecurity.so"
+    ]
+  },
+  "signing": {
+    "expected_certificate_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "matched_certificate_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "detected_signature_schemes": [
+      "V2"
+    ]
+  },
+  "checks": {
+    "apk_inspection": "PASS: APK inspection completed",
+    "zip_safety": "PASS: ZIP contains no duplicate or unsafe paths"
+  },
+  "warnings": []
+}

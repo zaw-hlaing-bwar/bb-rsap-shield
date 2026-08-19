@@ -1,0 +1,85 @@
+name: Release Payload Pack
+
+on:
+  workflow_dispatch:
+    inputs:
+      payload_version:
+        description: Payload version to write into manifest.json
+        required: false
+        default: 0.1.0-manual
+      abis:
+        description: Comma-separated ABI list
+        required: false
+        default: arm64-v8a,armeabi-v7a,x86_64
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  payload-pack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      PAYLOAD_VERSION_INPUT: ${{ github.event.inputs.payload_version }}
+      PAYLOAD_ABIS_INPUT: ${{ github.event.inputs.abis }}
+      RASP_PAYLOAD_SIGNING_KEY_HEX: ${{ secrets.RASP_PAYLOAD_SIGNING_KEY_HEX }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Install Android SDK payload dependencies
+        run: |
+          set -euo pipefail
+          sdkmanager_path="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
+          if [[ ! -x "${sdkmanager_path}" ]]; then
+            sdkmanager_path="$(command -v sdkmanager)"
+          fi
+          yes | "${sdkmanager_path}" --licenses >/dev/null
+          "${sdkmanager_path}" --install \
+            "platforms;android-36" \
+            "build-tools;36.0.0" \
+            "ndk;28.2.13676358"
+      - run: bash scripts/check.sh
+      - name: Build signed payload pack
+        run: |
+          set -euo pipefail
+          if [[ -z "${RASP_PAYLOAD_SIGNING_KEY_HEX}" ]]; then
+            echo "::error::RASP_PAYLOAD_SIGNING_KEY_HEX secret is not configured"
+            exit 1
+          fi
+          mkdir -p target
+          payload_version="${PAYLOAD_VERSION_INPUT:-${GITHUB_REF_NAME}}"
+          payload_version="${payload_version#v}"
+          payload_abis="${PAYLOAD_ABIS_INPUT:-arm64-v8a,armeabi-v7a,x86_64}"
+          bash scripts/build-payload-pack.sh \
+            --output target/payload-pack/android-release \
+            --payload-version "${payload_version}" \
+            --abis "${payload_abis}" | tee target/payload-pack-build.log
+          public_key="$(awk '/payload_signing_public_key_hex:/ {print $2}' target/payload-pack-build.log)"
+          test -n "${public_key}"
+          cargo run -q -p rasp-cli -- verify-payload-pack \
+            --payload-pack target/payload-pack/android-release \
+            --payload-signing-public-key-hex "${public_key}" | tee target/payload-pack-verify.log
+          tar -czf "target/rasp-shield-payload-pack-${payload_version}.tar.gz" \
+            -C target/payload-pack android-release
+          sha256sum "target/rasp-shield-payload-pack-${payload_version}.tar.gz" \
+            > "target/rasp-shield-payload-pack-${payload_version}.tar.gz.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rasp-shield-payload-pack-${{ github.run_id }}
+          path: |
+            target/rasp-shield-payload-pack-*.tar.gz
+            target/rasp-shield-payload-pack-*.tar.gz.sha256
+            target/payload-pack/android-release/manifest.json
+            target/payload-pack/android-release/signature.ed25519
+            target/payload-pack/android-release/sbom.json
+            target/payload-pack-build.log
+            target/payload-pack-verify.log

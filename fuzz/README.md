@@ -16,14 +16,27 @@ Targets:
   mutation, signature stripping, collision handling, and inspect-after-rewrite
   checks.
 
-Run a short local campaign:
+Run a local campaign with artifact replay:
 
 ```sh
 cargo install cargo-fuzz
-cargo fuzz run axml_parse -- -max_total_time=60
-cargo fuzz run axml_provider_injection -- -max_total_time=60
-cargo fuzz run apk_inspect -- -max_total_time=60
-cargo fuzz run apk_rewrite -- -max_total_time=60
+rustup toolchain install nightly
+scripts/fuzz-campaign.sh --seconds 300
+```
+
+The campaign script replays committed inputs from `fuzz/regressions/<target>/`
+and local libFuzzer crash artifacts from `fuzz/artifacts/<target>/` before
+running each selected target. Logs are written under `target/fuzz-campaign/` by
+default. To run a deterministic smoke pass without spending time fuzzing:
+
+```sh
+scripts/fuzz-campaign.sh --runs 1
+```
+
+To run only high-risk parser and rewrite targets:
+
+```sh
+scripts/fuzz-campaign.sh --targets axml_parse,apk_rewrite --seconds 1800
 ```
 
 Compile-check without running libFuzzer:
@@ -32,7 +45,13 @@ Compile-check without running libFuzzer:
 cargo check --manifest-path fuzz/Cargo.toml --bins --locked
 ```
 
-Crash artifacts are written under `fuzz/artifacts/`. Add minimized regressions
-to the relevant crate tests before deleting the artifact. Local generated corpus
-state is written under `fuzz/corpus/` and is intentionally ignored; promote only
-curated seeds or regression tests into source control.
+Crash artifacts are written under `fuzz/artifacts/`. Reproduce each artifact
+with `scripts/fuzz-campaign.sh --replay-only --targets <target>`, minimize it,
+then either add a focused crate test or commit the minimized input under
+`fuzz/regressions/<target>/`. Local generated corpus state is written under
+`fuzz/corpus/` and is intentionally ignored; promote only curated seeds or
+regression tests into source control.
+
+The scheduled GitHub workflow in `.github/workflows/fuzz.yml` runs the same
+script nightly and can also be started manually with a custom seconds-per-target
+budget. Its logs and libFuzzer artifacts are uploaded as workflow artifacts.

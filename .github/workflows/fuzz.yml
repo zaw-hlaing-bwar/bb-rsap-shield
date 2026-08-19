@@ -1,0 +1,34 @@
+name: Fuzz Campaign
+
+on:
+  workflow_dispatch:
+    inputs:
+      seconds_per_target:
+        description: Seconds to fuzz each target
+        required: false
+        default: "300"
+  schedule:
+    - cron: "37 2 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      RASP_FUZZ_SECONDS: ${{ github.event.inputs.seconds_per_target }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - run: cargo install cargo-fuzz --locked
+      - run: bash scripts/fuzz-campaign.sh --seconds "${RASP_FUZZ_SECONDS:-300}" --report-dir target/fuzz-campaign
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fuzz-campaign-${{ github.run_id }}
+          path: |
+            target/fuzz-campaign
+            fuzz/artifacts
+          if-no-files-found: ignore

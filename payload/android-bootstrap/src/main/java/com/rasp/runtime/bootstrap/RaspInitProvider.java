@@ -12,6 +12,8 @@ import android.database.Cursor;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.SystemClock;
+import android.util.Log;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.security.MessageDigest;
@@ -26,6 +28,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 public final class RaspInitProvider extends ContentProvider {
+  private static final String TAG = "RaspShield";
   private static final String INTEGRITY_MANIFEST_ASSET =
       "rasp-shield/integrity-manifest.json";
   private static final int ACTION_ALLOW = 0;
@@ -46,6 +49,8 @@ public final class RaspInitProvider extends ContentProvider {
   private static volatile int lastAction = ACTION_ALLOW;
   private static volatile String lastActionName = "ALLOW";
   private static volatile String lastReportJson = "{}";
+  private static volatile long lastStartupDurationMs;
+  private static volatile boolean lastStartupBudgetExceeded;
 
   static {
     try {
@@ -100,14 +105,24 @@ public final class RaspInitProvider extends ContentProvider {
     return lastReportJson;
   }
 
+  public static long getLastStartupDurationMs() {
+    return lastStartupDurationMs;
+  }
+
+  public static boolean isLastStartupBudgetExceeded() {
+    return lastStartupBudgetExceeded;
+  }
+
   @Override
   public boolean onCreate() {
+    long startupStartNs = SystemClock.elapsedRealtimeNanos();
+    RuntimePolicy policyForMonitor = RuntimePolicy.defaults();
     if (!nativeLibraryLoaded) {
+      recordStartupTiming(startupStartNs, policyForMonitor, false, ACTION_ALLOW);
       return true;
     }
 
     int actionToApply = ACTION_ALLOW;
-    RuntimePolicy policyForMonitor = null;
     try {
       Context context = getContext();
       Context applicationContext =
@@ -140,11 +155,39 @@ public final class RaspInitProvider extends ContentProvider {
       initialized = false;
     }
 
+    recordStartupTiming(startupStartNs, policyForMonitor, initialized, actionToApply);
     applyAction(actionToApply);
     if (initialized && policyForMonitor != null) {
       startMonitoring(applicationContext(), policyForMonitor);
     }
     return true;
+  }
+
+  private static void recordStartupTiming(long startupStartNs, RuntimePolicy policy,
+      boolean startupInitialized, int action) {
+    long elapsedNs = SystemClock.elapsedRealtimeNanos() - startupStartNs;
+    long durationMs = Math.max(0L, elapsedNs / 1000000L);
+    if (elapsedNs > 0L && elapsedNs % 1000000L != 0L) {
+      durationMs++;
+    }
+
+    int budgetMs = policy == null
+        ? RuntimePolicy.defaults().startupBudgetMs
+        : policy.startupBudgetMs;
+    boolean budgetExceeded = durationMs > budgetMs;
+    lastStartupDurationMs = durationMs;
+    lastStartupBudgetExceeded = budgetExceeded;
+
+    String message = "startup_duration_ms=" + durationMs
+        + " startup_budget_ms=" + budgetMs
+        + " startup_budget_exceeded=" + budgetExceeded
+        + " initialized=" + startupInitialized
+        + " action=" + actionName(action);
+    if (budgetExceeded) {
+      Log.w(TAG, message);
+    } else {
+      Log.i(TAG, message);
+    }
   }
 
   private Context applicationContext() {
@@ -338,6 +381,7 @@ public final class RaspInitProvider extends ContentProvider {
     private final int warnThreshold;
     private final int restrictThreshold;
     private final int terminateThreshold;
+    private final int startupBudgetMs;
     private final String runtimeHighRiskAction;
     private final String startupIntegrityAction;
     private final String startupPayloadTamperingAction;
@@ -367,9 +411,10 @@ public final class RaspInitProvider extends ContentProvider {
     private int nextRuntimeProtectedAssetIndex;
 
     private RuntimePolicy(int reportThreshold, int warnThreshold,
-        int restrictThreshold, int terminateThreshold, String runtimeHighRiskAction,
-        String startupIntegrityAction, String startupPayloadTamperingAction,
-        boolean monitoringEnabled, int scanIntervalMinimumMs,
+        int restrictThreshold, int terminateThreshold, int startupBudgetMs,
+        String runtimeHighRiskAction, String startupIntegrityAction,
+        String startupPayloadTamperingAction, boolean monitoringEnabled,
+        int scanIntervalMinimumMs,
         int scanIntervalMaximumMs, boolean deepScanOnSuspicion,
         boolean monitorBackgroundState, boolean debuggerDetectionEnabled,
         int debuggerDetectionWeight, boolean instrumentationDetectionEnabled,
@@ -385,6 +430,7 @@ public final class RaspInitProvider extends ContentProvider {
       this.warnThreshold = warnThreshold;
       this.restrictThreshold = restrictThreshold;
       this.terminateThreshold = terminateThreshold;
+      this.startupBudgetMs = startupBudgetMs;
       this.runtimeHighRiskAction = runtimeHighRiskAction;
       this.startupIntegrityAction = startupIntegrityAction;
       this.startupPayloadTamperingAction = startupPayloadTamperingAction;
@@ -414,7 +460,7 @@ public final class RaspInitProvider extends ContentProvider {
     }
 
     private static RuntimePolicy defaults() {
-      return new RuntimePolicy(20, 40, 70, 100, "REPORT", "TERMINATE",
+      return new RuntimePolicy(20, 40, 70, 100, 50, "REPORT", "TERMINATE",
           "TERMINATE", true, 5000, 15000, true, false, true, 40, true, 60,
           true, 60, true, 20, false, 10, "", new ArrayList<String>(),
           new ArrayList<ProtectedAsset>(), 0, "", 0, "", false);
@@ -443,6 +489,9 @@ public final class RaspInitProvider extends ContentProvider {
             optRiskScore(thresholds, "warn", defaults.warnThreshold),
             optRiskScore(thresholds, "restrict", defaults.restrictThreshold),
             optRiskScore(thresholds, "terminate", defaults.terminateThreshold),
+            runtime == null
+                ? defaults.startupBudgetMs
+                : runtime.optInt("startup_budget_ms", defaults.startupBudgetMs),
             runtime == null
                 ? defaults.runtimeHighRiskAction
                 : runtime.optString("runtime_high_risk_action",
@@ -521,6 +570,7 @@ public final class RaspInitProvider extends ContentProvider {
           && warnThreshold < restrictThreshold
           && restrictThreshold <= terminateThreshold
           && terminateThreshold <= 100
+          && startupBudgetMs > 0
           && debuggerDetectionWeight >= 0
           && debuggerDetectionWeight <= 100
           && instrumentationDetectionWeight >= 0

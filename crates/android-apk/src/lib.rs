@@ -28,6 +28,7 @@ pub fn default_runtime_policy() -> IntegrityRuntimePolicy {
             restrict: 70,
             terminate: 100,
         },
+        startup_budget_ms: default_startup_budget_ms(),
         runtime_high_risk_action: IntegrityRiskAction::Report,
         startup_integrity_action: IntegrityRiskAction::Terminate,
         startup_payload_tampering_action: IntegrityRiskAction::Terminate,
@@ -153,6 +154,8 @@ pub struct IntegrityPolicy {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct IntegrityRuntimePolicy {
     pub thresholds: IntegrityRiskThresholds,
+    #[serde(default = "default_startup_budget_ms")]
+    pub startup_budget_ms: u32,
     pub runtime_high_risk_action: IntegrityRiskAction,
     #[serde(default = "default_startup_integrity_action")]
     pub startup_integrity_action: IntegrityRiskAction,
@@ -171,6 +174,10 @@ pub struct IntegrityRuntimeMonitoring {
     pub scan_interval_maximum_ms: u32,
     pub deep_scan_on_suspicion: bool,
     pub monitor_background_state: bool,
+}
+
+pub fn default_startup_budget_ms() -> u32 {
+    50
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -626,6 +633,11 @@ fn validate_runtime_policy(policy: &IntegrityRuntimePolicy) -> Result<(), ApkRew
                 .to_string(),
         ));
     }
+    if policy.startup_budget_ms == 0 {
+        return Err(ApkRewriteError::Validation(
+            "runtime startup budget must be greater than zero".to_string(),
+        ));
+    }
     if policy.monitoring.scan_interval_minimum_ms == 0
         || policy.monitoring.scan_interval_minimum_ms > policy.monitoring.scan_interval_maximum_ms
     {
@@ -1024,6 +1036,7 @@ mod tests {
             "1".repeat(64)
         );
         assert_eq!(integrity_manifest.policy.runtime.thresholds.report, 20);
+        assert_eq!(integrity_manifest.policy.runtime.startup_budget_ms, 50);
         assert_eq!(integrity_manifest.apk_inventory.entry_count, 9);
         assert_eq!(integrity_manifest.apk_inventory.executable_entry_count, 5);
         assert_eq!(integrity_manifest.apk_inventory.entry_set_sha256.len(), 64);
@@ -1214,6 +1227,7 @@ mod tests {
                         restrict: 70,
                         terminate: 100,
                     },
+                    startup_budget_ms: 50,
                     runtime_high_risk_action: IntegrityRiskAction::Report,
                     startup_integrity_action: IntegrityRiskAction::Terminate,
                     startup_payload_tampering_action: IntegrityRiskAction::Terminate,

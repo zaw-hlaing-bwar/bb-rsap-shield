@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "signed_apk": {
+    "path": "app-release-signed.apk",
+    "sha256": null
+  },
+  "unsigned_apk": {
+    "path": "app-release-unsigned.apk",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "size_bytes": 4096
+  },
+  "expected_certificate_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "expected_payload": {
+    "version": "2026.08.05-dev",
+    "bootstrap_dex_entry": "classes2.dex",
+    "native_library_entries": [
+      "lib/arm64-v8a/libsecurity.so"
+    ]
+  },
+  "checks": [
+    "ZIP structure is valid and contains no duplicate or unsafe paths",
+    "APK signing certificate matches expected_certificate_sha256"
+  ]
+}

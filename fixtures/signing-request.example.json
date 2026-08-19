@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "request_type": "ANDROID_APK_EXTERNAL_SIGNING",
+  "original_apk": {
+    "path": "app-release.apk",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "size_bytes": 4096
+  },
+  "unsigned_apk": {
+    "path": "app-release-unsigned.apk",
+    "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "size_bytes": 8192
+  },
+  "payload": {
+    "version": "2026.08.05-dev",
+    "bootstrap_dex_entry": "classes2.dex",
+    "native_library_entries": [
+      "lib/arm64-v8a/libsecurity.so"
+    ]
+  },
+  "signing": {
+    "expected_certificate_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "preserve_signature_lineage": false
+  },
+  "generated_by": {
+    "name": "rasp-cli",
+    "version": "0.1.0"
+  },
+  "instructions": [
+    "Align the unsigned APK with zipalign before signing.",
+    "Sign the aligned APK with apksigner using the expected certificate.",
+    "Run rasp-cli verify with the expected certificate SHA-256 after signing."
+  ]
+}

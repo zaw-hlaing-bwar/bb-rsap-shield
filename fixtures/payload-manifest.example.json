@@ -1,0 +1,15 @@
+{
+  "payload_version": "2026.08.05-dev",
+  "minimum_cli_version": "0.1.0",
+  "maximum_cli_version": "0.1.0",
+  "supported_platform": "android",
+  "supported_abis": [
+    "arm64-v8a"
+  ],
+  "files": {
+    "bootstrap.dex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "arm64-v8a/libsecurity.so": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "sbom.json": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "licenses/NOTICE.txt": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  }
+}

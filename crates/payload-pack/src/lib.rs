@@ -14,6 +14,7 @@ pub const BOOTSTRAP_DEX_FILE: &str = "bootstrap.dex";
 pub const SECURITY_LIBRARY_NAME: &str = "libsecurity.so";
 pub const PAYLOAD_SBOM_FILE: &str = "sbom.json";
 pub const PAYLOAD_LICENSE_NOTICE_FILE: &str = "licenses/NOTICE.txt";
+pub const MAX_NATIVE_LIBRARY_BYTES: u64 = 1_572_864;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -269,6 +270,7 @@ fn load_payload_pack_internal(
             BOOTSTRAP_DEX_FILE
         )));
     }
+    validate_bootstrap_dex(&bootstrap_dex_path)?;
 
     let mut abi_libraries = BTreeMap::new();
     for abi in &manifest.supported_abis {
@@ -279,6 +281,7 @@ fn load_payload_pack_internal(
                 "payload pack is missing ABI library {library_path}"
             )));
         }
+        validate_native_library(&absolute_library_path)?;
         abi_libraries.insert(abi.clone(), absolute_library_path);
     }
 
@@ -340,7 +343,15 @@ fn validate_bootstrap_dex(path: &Path) -> Result<(), PayloadPackError> {
 }
 
 fn validate_native_library(path: &Path) -> Result<(), PayloadPackError> {
-    validate_magic(path, b"\x7fELF", "native library")
+    validate_magic(path, b"\x7fELF", "native library")?;
+    let size_bytes = fs::metadata(path)?.len();
+    if size_bytes > MAX_NATIVE_LIBRARY_BYTES {
+        return Err(PayloadPackError::Validation(format!(
+            "native library exceeds payload size budget: {} is {size_bytes} bytes, maximum is {MAX_NATIVE_LIBRARY_BYTES} bytes",
+            path.display()
+        )));
+    }
+    Ok(())
 }
 
 fn validate_magic(path: &Path, expected_magic: &[u8], label: &str) -> Result<(), PayloadPackError> {
@@ -745,8 +756,8 @@ mod tests {
         build_payload_pack, decode_fixed_hex, hex_lower, is_cli_version_compatible, is_hex_sha256,
         load_payload_pack_verified, parse_signature_file, validate_payload_relative_path,
         ParsedVersion, PayloadPackBuildOptions, PayloadSbom, PayloadSigningKey,
-        PayloadVerificationKey, BOOTSTRAP_DEX_FILE, PAYLOAD_LICENSE_NOTICE_FILE, PAYLOAD_SBOM_FILE,
-        SECURITY_LIBRARY_NAME,
+        PayloadVerificationKey, BOOTSTRAP_DEX_FILE, MAX_NATIVE_LIBRARY_BYTES,
+        PAYLOAD_LICENSE_NOTICE_FILE, PAYLOAD_SBOM_FILE, SECURITY_LIBRARY_NAME,
     };
     use ed25519_dalek::{Signer, SigningKey};
     use sha2::{Digest, Sha256};
@@ -953,6 +964,37 @@ mod tests {
     }
 
     #[test]
+    fn rejects_oversized_native_library_during_build() {
+        let source_root = create_temp_dir("oversized-build-sources");
+        let output_root = create_temp_dir("oversized-build-output");
+        let bootstrap_path = source_root.join("classes.dex");
+        let library_path = source_root.join("libsecurity.so");
+        let mut library_bytes = vec![0u8; MAX_NATIVE_LIBRARY_BYTES as usize + 1];
+        library_bytes[..4].copy_from_slice(b"\x7fELF");
+        fs::write(&bootstrap_path, b"dex\n035\0payload").expect("write bootstrap source");
+        fs::write(&library_path, library_bytes).expect("write oversized native source");
+
+        let mut abi_libraries = BTreeMap::new();
+        abi_libraries.insert("arm64-v8a".to_string(), library_path);
+        let error = build_payload_pack(
+            &PayloadPackBuildOptions {
+                output_root,
+                bootstrap_dex_path: bootstrap_path,
+                abi_libraries,
+                payload_version: "2026.08.09-dev".to_string(),
+                minimum_cli_version: "0.1.0".to_string(),
+                maximum_cli_version: "0.x".to_string(),
+            },
+            &PayloadSigningKey::from_bytes([16u8; 32]),
+        )
+        .expect_err("oversized native library should fail");
+
+        assert!(error
+            .to_string()
+            .contains("native library exceeds payload size budget"));
+    }
+
+    #[test]
     fn rejects_payload_pack_with_invalid_signature() {
         let signing_key = SigningKey::from_bytes(&[11u8; 32]);
         let root = create_signed_payload_pack("invalid-signature-pack", &signing_key);
@@ -984,7 +1026,7 @@ mod tests {
 
         fs::create_dir_all(library_path.parent().expect("library parent")).expect("create ABI dir");
         fs::write(&bootstrap_path, b"dex\n035\0").expect("write bootstrap");
-        fs::write(&library_path, b"security library").expect("write native library");
+        fs::write(&library_path, b"\x7fELFsecurity library").expect("write native library");
         fs::create_dir_all(root.join("licenses")).expect("create licenses dir");
         let notice = b"test notice";
         fs::write(root.join(PAYLOAD_LICENSE_NOTICE_FILE), notice).expect("write notice");
@@ -1013,7 +1055,7 @@ mod tests {
         files.insert(BOOTSTRAP_DEX_FILE.to_string(), sha256_bytes(b"dex\n035\0"));
         files.insert(
             format!("{abi}/{SECURITY_LIBRARY_NAME}"),
-            sha256_bytes(b"security library"),
+            sha256_bytes(b"\x7fELFsecurity library"),
         );
         files.insert(
             PAYLOAD_LICENSE_NOTICE_FILE.to_string(),

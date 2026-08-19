@@ -79,6 +79,9 @@ static uint64_t g_self_text_checksum = 0U;
 static size_t g_self_text_bytes = 0U;
 static int g_self_text_checksum_initialized = 0;
 static int g_process_hardening_attempted = 0;
+static uint8_t g_proc_net_tcp_restricted = 0U;
+static uint8_t g_proc_net_tcp6_restricted = 0U;
+static uint8_t g_proc_net_unix_restricted = 0U;
 
 static const char *const k_frida_map_tokens[] = {
     "frida",       "gum-js-loop",  "frida-agent", "frida-gadget",
@@ -885,10 +888,37 @@ static void rasp_scan_tcp_line(const char *line, RaspSecurityReport *report) {
   }
 }
 
-static void rasp_scan_tcp_path(const char *path, RaspSecurityReport *report) {
+static void rasp_disable_proc_net_scan_on_error(int error_code,
+                                                uint8_t *restricted) {
+  if (restricted == NULL) {
+    return;
+  }
+  if (error_code == EACCES || error_code == EPERM) {
+    *restricted = 1U;
+  }
+}
+
+static FILE *rasp_open_optional_proc_net_path(const char *path,
+                                              uint8_t *restricted) {
+  FILE *file;
+
+  if (restricted != NULL && *restricted != 0U) {
+    return NULL;
+  }
+
+  errno = 0;
+  file = fopen(path, "r");
+  if (file == NULL) {
+    rasp_disable_proc_net_scan_on_error(errno, restricted);
+  }
+  return file;
+}
+
+static void rasp_scan_tcp_path(const char *path, RaspSecurityReport *report,
+                               uint8_t *restricted) {
   char line[512];
   uint32_t lines_read = 0U;
-  FILE *file = fopen(path, "r");
+  FILE *file = rasp_open_optional_proc_net_path(path, restricted);
   if (file == NULL) {
     return;
   }
@@ -913,10 +943,11 @@ static void rasp_scan_unix_line(const char *line, RaspSecurityReport *report) {
   }
 }
 
-static void rasp_scan_unix_path(const char *path, RaspSecurityReport *report) {
+static void rasp_scan_unix_path(const char *path, RaspSecurityReport *report,
+                                uint8_t *restricted) {
   char line[512];
   uint32_t lines_read = 0U;
-  FILE *file = fopen(path, "r");
+  FILE *file = rasp_open_optional_proc_net_path(path, restricted);
   if (file == NULL) {
     return;
   }
@@ -1666,9 +1697,9 @@ static int rasp_security_collect_with_policy(
   rasp_scan_status_path("/proc/self/status", report);
   rasp_scan_task_threads("/proc/self/task", report);
   rasp_scan_fd_links("/proc/self/fd", report);
-  rasp_scan_tcp_path("/proc/net/tcp", report);
-  rasp_scan_tcp_path("/proc/net/tcp6", report);
-  rasp_scan_unix_path("/proc/net/unix", report);
+  rasp_scan_tcp_path("/proc/net/tcp", report, &g_proc_net_tcp_restricted);
+  rasp_scan_tcp_path("/proc/net/tcp6", report, &g_proc_net_tcp6_restricted);
+  rasp_scan_unix_path("/proc/net/unix", report, &g_proc_net_unix_restricted);
   rasp_scan_environment_path("/proc/self/environ", report);
   if (effective_policy->root_detection_enabled != 0U) {
     rasp_scan_root_state(report, effective_policy->root_detection_weight);
@@ -2109,6 +2140,12 @@ int rasp_security_test_scan_unix_text(const char *text,
 
   (void)rasp_security_apply_policy(report, NULL);
   return 0;
+}
+
+int rasp_security_test_proc_net_scan_disabled_after_error(int error_code) {
+  uint8_t restricted = 0U;
+  rasp_disable_proc_net_scan_on_error(error_code, &restricted);
+  return restricted != 0U ? 1 : 0;
 }
 
 int rasp_security_test_scan_environment_text(const char *text,

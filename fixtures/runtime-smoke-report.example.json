@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "result": "PASS",
+  "apk_path": "app-release.apk",
+  "package_name": "com.example.mobile",
+  "launch_activity": "com.example.MainActivity",
+  "device_serial": null,
+  "steps": [
+    {
+      "name": "device_state",
+      "result": "PASS",
+      "detail": "device"
+    },
+    {
+      "name": "install",
+      "result": "PASS",
+      "detail": "Success"
+    },
+    {
+      "name": "clear_logcat",
+      "result": "PASS",
+      "detail": "ok"
+    },
+    {
+      "name": "launch",
+      "result": "PASS",
+      "detail": "Status: ok"
+    },
+    {
+      "name": "process_running",
+      "result": "PASS",
+      "detail": "1234"
+    },
+    {
+      "name": "startup_budget",
+      "result": "PASS",
+      "detail": "startup_duration_ms=7 startup_budget_ms=50 startup_budget_exceeded=false"
+    },
+    {
+      "name": "uninstall",
+      "result": "PASS",
+      "detail": "Success"
+    }
+  ],
+  "warnings": []
+}

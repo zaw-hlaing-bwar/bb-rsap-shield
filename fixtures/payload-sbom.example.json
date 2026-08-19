@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "sbom_type": "RASP_SHIELD_PAYLOAD_SBOM",
+  "payload_version": "2026.08.05-dev",
+  "components": [
+    {
+      "name": "rasp-bootstrap",
+      "kind": "android_dex",
+      "path": "bootstrap.dex",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "license": "LicenseRef-Proprietary"
+    },
+    {
+      "name": "rasp-security",
+      "kind": "native_library",
+      "abi": "arm64-v8a",
+      "path": "arm64-v8a/libsecurity.so",
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "license": "LicenseRef-Proprietary"
+    },
+    {
+      "name": "rasp-payload-license-notice",
+      "kind": "license_notice",
+      "path": "licenses/NOTICE.txt",
+      "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "license": "LicenseRef-Proprietary"
+    }
+  ],
+  "generated_by": {
+    "name": "payload-pack",
+    "version": "0.1.0"
+  }
+}

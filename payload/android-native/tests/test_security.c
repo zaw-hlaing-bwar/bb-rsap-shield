@@ -1,6 +1,7 @@
 #include "rasp_security.h"
 
 #include <assert.h>
+#include <errno.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -98,6 +99,12 @@ static void detects_frida_unix_socket(void) {
   assert(has_signal(&report, "instrumentation.frida_unix_socket"));
   assert(report.risk_score == 25U);
   assert(report.action == RASP_SECURITY_ACTION_REPORT);
+}
+
+static void disables_proc_net_scans_after_permission_denial(void) {
+  assert(rasp_security_test_proc_net_scan_disabled_after_error(EACCES) == 1);
+  assert(rasp_security_test_proc_net_scan_disabled_after_error(EPERM) == 1);
+  assert(rasp_security_test_proc_net_scan_disabled_after_error(ENOENT) == 0);
 }
 
 static void detects_suspicious_environment(void) {
@@ -288,6 +295,7 @@ int main(void) {
   detects_tracer_pid();
   detects_frida_default_ports();
   detects_frida_unix_socket();
+  disables_proc_net_scans_after_permission_denial();
   detects_suspicious_environment();
   runtime_policy_disables_instrumentation_signals();
   runtime_policy_caps_debugger_signal_weight();

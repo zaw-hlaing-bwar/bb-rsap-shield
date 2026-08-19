@@ -19,7 +19,7 @@ use artifact_inspector::{inspect_apk, ApkSignatureScheme, InspectionResult};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use payload_pack::{
     build_payload_pack, load_payload_pack_verified, PayloadPack, PayloadPackBuildOptions,
-    PayloadPackError, PayloadSigningKey, PayloadVerificationKey,
+    PayloadPackError, PayloadSigningKey, PayloadVerificationKey, PAYLOAD_MANIFEST_FILE,
 };
 use rasp_config::{
     is_valid_env_var_name, load_config, RaspConfig, RiskAction, CONFIG_SCHEMA_VERSION,
@@ -58,6 +58,8 @@ enum Commands {
     RuntimeSmoke(RuntimeSmokeArgs),
     /// Build and sign a runtime payload pack from compiled Android artifacts.
     BuildPayloadPack(BuildPayloadPackArgs),
+    /// Verify a signed runtime payload pack with its Ed25519 public key.
+    VerifyPayloadPack(VerifyPayloadPackArgs),
     /// Check host dependencies required by the Android pipeline.
     Doctor,
     /// Display CLI, payload, schema, and build version information.
@@ -152,6 +154,14 @@ struct BuildPayloadPackArgs {
     maximum_cli_version: Option<String>,
 }
 
+#[derive(Debug, Args)]
+struct VerifyPayloadPackArgs {
+    #[arg(long)]
+    payload_pack: PathBuf,
+    #[arg(long)]
+    payload_signing_public_key_hex: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum OutputFormat {
     Text,
@@ -185,6 +195,7 @@ fn run() -> RaspResult<ExitCode> {
         Commands::Verify(args) => verify(args),
         Commands::RuntimeSmoke(args) => runtime_smoke(args),
         Commands::BuildPayloadPack(args) => build_payload_pack_command(args),
+        Commands::VerifyPayloadPack(args) => verify_payload_pack_command(args),
         Commands::Doctor => doctor(),
         Commands::Version => version(),
     }
@@ -644,6 +655,33 @@ fn build_payload_pack_command(args: BuildPayloadPackArgs) -> RaspResult<ExitCode
     Ok(ExitCode::Success)
 }
 
+fn verify_payload_pack_command(args: VerifyPayloadPackArgs) -> RaspResult<ExitCode> {
+    validate_payload_verify_args(&args)?;
+    let verification_key = PayloadVerificationKey::from_hex(&args.payload_signing_public_key_hex)
+        .map_err(payload_verify_error_into_rasp_error)?;
+    let pack = load_payload_pack_verified(
+        &args.payload_pack,
+        env!("CARGO_PKG_VERSION"),
+        &verification_key,
+    )
+    .map_err(payload_verify_error_into_rasp_error)?;
+
+    println!("payload_pack: {}", pack.root.display());
+    println!(
+        "manifest: {}",
+        pack.root.join(PAYLOAD_MANIFEST_FILE).display()
+    );
+    println!("signature: {}", pack.signature_path.display());
+    println!("payload_version: {}", pack.manifest.payload_version);
+    println!(
+        "supported_abis: {}",
+        pack.manifest.supported_abis.join(", ")
+    );
+    println!("files: {}", pack.manifest.files.len());
+
+    Ok(ExitCode::Success)
+}
+
 fn validate_payload_build_args(args: &BuildPayloadPackArgs) -> RaspResult<()> {
     if args.output.as_os_str().is_empty() {
         return Err(RaspError::new(
@@ -679,6 +717,25 @@ fn validate_payload_build_args(args: &BuildPayloadPackArgs) -> RaspResult<()> {
         ));
     }
 
+    Ok(())
+}
+
+fn validate_payload_verify_args(args: &VerifyPayloadPackArgs) -> RaspResult<()> {
+    if !args.payload_pack.is_dir() {
+        return Err(RaspError::new(
+            ExitCode::InvalidCliArguments,
+            format!(
+                "--payload-pack must be an existing directory: {}",
+                args.payload_pack.display()
+            ),
+        ));
+    }
+    if !is_hex_sha256(&args.payload_signing_public_key_hex) {
+        return Err(RaspError::new(
+            ExitCode::InvalidCliArguments,
+            "--payload-signing-public-key-hex must be 64 hex characters",
+        ));
+    }
     Ok(())
 }
 
@@ -739,6 +796,19 @@ fn payload_build_error_into_rasp_error(error: PayloadPackError) -> RaspError {
             ExitCode::PayloadSignatureFailure
         }
         PayloadPackError::Io(_) | PayloadPackError::Json(_) => ExitCode::GeneralProcessingFailure,
+    };
+    RaspError::new(exit_code, error.to_string())
+}
+
+fn payload_verify_error_into_rasp_error(error: PayloadPackError) -> RaspError {
+    let exit_code = match error {
+        PayloadPackError::InvalidPublicKey(_) => ExitCode::InvalidCliArguments,
+        PayloadPackError::InvalidSignature(_)
+        | PayloadPackError::DigestMismatch { .. }
+        | PayloadPackError::Validation(_)
+        | PayloadPackError::Json(_) => ExitCode::PayloadSignatureFailure,
+        PayloadPackError::InvalidSigningKey(_) => ExitCode::InvalidCliArguments,
+        PayloadPackError::Io(_) => ExitCode::GeneralProcessingFailure,
     };
     RaspError::new(exit_code, error.to_string())
 }
@@ -1692,6 +1762,7 @@ fn integrity_runtime_policy(config: &RaspConfig) -> IntegrityRuntimePolicy {
             restrict: config.risk_policy.thresholds.restrict,
             terminate: config.risk_policy.thresholds.terminate,
         },
+        startup_budget_ms: config.runtime.startup_budget_ms,
         runtime_high_risk_action: integrity_risk_action(config.risk_policy.runtime_high_risk),
         startup_integrity_action: integrity_risk_action(
             config.risk_policy.startup_signature_mismatch,
@@ -2273,6 +2344,7 @@ mod tests {
 
         let policy = integrity_runtime_policy(&config);
 
+        assert_eq!(policy.startup_budget_ms, 50);
         assert!(policy.detections.debugger.enabled);
         assert_eq!(policy.detections.debugger.weight, 40);
         assert!(policy.detections.instrumentation.enabled);

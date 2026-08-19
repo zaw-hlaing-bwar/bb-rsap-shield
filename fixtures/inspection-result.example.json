@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "artifact_type": "APK",
+  "path": "app-release.apk",
+  "size_bytes": 4096,
+  "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "package_name": "com.example.mobile",
+  "version_name": "1.0.0",
+  "version_code": 1,
+  "min_sdk": 23,
+  "target_sdk": 35,
+  "supported_abis": [
+    "arm64-v8a"
+  ],
+  "dex_files": [
+    {
+      "path": "classes.dex",
+      "size_bytes": 1024,
+      "compressed": true
+    }
+  ],
+  "native_libraries": [
+    {
+      "path": "lib/arm64-v8a/libsecurity.so",
+      "abi": "arm64-v8a",
+      "name": "libsecurity.so",
+      "size_bytes": 2048,
+      "compressed": false
+    }
+  ],
+  "flutter": null,
+  "react_native_engine": "HERMES",
+  "javascript_bundle_path": "assets/index.android.bundle",
+  "application_class": "com.example.MainApplication",
+  "extract_native_libs": false,
+  "main_activity": "com.example.MainActivity",
+  "content_providers": [
+    {
+      "name": "com.example.rasp.RaspInitProvider",
+      "authorities": "com.example.mobile.raspinit",
+      "exported": false
+    }
+  ],
+  "detected_signature_schemes": [
+    "V2",
+    "V3"
+  ],
+  "signature_certificates": [
+    {
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "schemes": [
+        "V2"
+      ],
+      "size_bytes": 1024
+    }
+  ],
+  "signature_entries": [
+    "META-INF/CERT.RSA"
+  ],
+  "apk_compression": {
+    "total_entries": 6,
+    "compressed_entries": 4,
+    "stored_entries": 2,
+    "duplicate_paths": [],
+    "zip_slip_paths": [],
+    "total_uncompressed_bytes": 8192
+  },
+  "existing_security_products": [
+    "RASP Shield"
+  ],
+  "compatibility_warnings": [],
+  "warnings": []
+}

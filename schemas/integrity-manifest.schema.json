@@ -61,7 +61,12 @@
         "runtime": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["thresholds", "runtime_high_risk_action", "detections"],
+          "required": [
+            "thresholds",
+            "startup_budget_ms",
+            "runtime_high_risk_action",
+            "detections"
+          ],
           "properties": {
             "thresholds": {
               "type": "object",
@@ -81,6 +86,10 @@
                   "$ref": "#/$defs/risk_score"
                 }
               }
+            },
+            "startup_budget_ms": {
+              "type": "integer",
+              "minimum": 1
             },
             "runtime_high_risk_action": {
               "$ref": "#/$defs/risk_action"

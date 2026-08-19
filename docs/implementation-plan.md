@@ -464,9 +464,15 @@ Current status:
 - Local signing smoke testing passes with the Android debug keystore.
 - ADB install/launch/process runtime smoke automation is implemented as `rasp-cli runtime-smoke`.
   It installs the APK with `adb install -r -t`, launches either the decoded main activity or launcher
-  intent, checks `pidof <package>`, optionally uninstalls, and can emit a JSON report.
-- No Android device is currently attached in this local environment, so a real-device install/launch
-  run was not executed.
+  intent, checks `pidof <package>`, validates the `RaspShield` startup timing log, optionally
+  uninstalls, and can emit a JSON report.
+- Android API 36 emulator validation has been executed on `Pixel_9_Pro_XL_API_36`
+  (`emulator-5554`, `arm64-v8a`). A signed transformed Flutter APK passed static verification,
+  install, launch, process-running, provider registration, and native `libsecurity.so` load checks.
+- Android 16 emulator validation exposed repeated SELinux audit spam from monitor scans of
+  `/proc/net/tcp`, `/proc/net/tcp6`, and `/proc/net/unix`; the native scanner now disables each
+  proc-net scan for the process after the first `EACCES` or `EPERM` failure.
+- Physical-device validation is still needed for release sign-off.
 
 ### Milestone 5: Runtime Payload MVP
 
@@ -495,13 +501,15 @@ Current status:
 - The detector computes capped risk as `min(100, sum(active_signal_weights))` and keeps the latest
   report available as JSON.
 - The generated integrity manifest now carries the runtime response policy summary, including
-  thresholds, `runtime_high_risk_action`, `startup_integrity_action`, and
+  thresholds, `startup_budget_ms`, `runtime_high_risk_action`, `startup_integrity_action`, and
   `startup_payload_tampering_action`.
 - The native payload resolves detector results to `ALLOW`, `REPORT`, `WARN`, `LOCK_STARTUP`, or
   `TERMINATE`, using conservative defaults when policy parsing fails.
 - Bootstrap `RaspInitProvider` Java source now loads `libsecurity.so` and calls the native detector
   during provider startup, reads the integrity manifest from assets, and applies configured
   lock-startup or terminate responses.
+- Bootstrap startup duration is measured with Android elapsed realtime, logged against the configured
+  startup budget, and exposed through public status accessors for host-side smoke checks.
 - Startup package-name and signing-certificate checks are implemented in the bootstrap provider.
   Mismatches are reported to native as startup integrity signals and default to `TERMINATE`.
 - Startup payload self-integrity checks are implemented for protected bootstrap DEX and native
@@ -517,14 +525,31 @@ Current status:
 - Runtime monitoring scheduler is implemented in the bootstrap provider. It uses randomized bounded
   intervals from the integrity manifest, can run one immediate confirmation scan on suspicion, and
   skips background scans when `monitor_background_state=false` and lifecycle callbacks are available.
+- Runtime smoke now clears and reads `logcat` around launch and fails the run when the bootstrap
+  reports `startup_budget_exceeded=true`.
 - Host-runnable native detector tests are implemented through `scripts/check-native.sh` and are
   included in `scripts/check.sh`.
 - Development payload-pack assembly from current source is implemented and can replace the old
-  placeholder smoke pack. Release-grade payload-pack production hardening still needs CI release
-  packaging and production key custody/signing procedures.
+  placeholder smoke pack.
+- Release payload-pack packaging automation is implemented through
+  `.github/workflows/release-payload-pack.yml`; it installs Android payload build dependencies,
+  runs repository checks, builds all selected ABI payloads, verifies the signed pack with
+  `rasp-cli verify-payload-pack`, emits an archive SHA-256, and uploads release artifacts.
+- Production payload signing custody and rotation procedures are documented in
+  `docs/payload-signing.md`; release sign-off still needs the protected CI secret/environment to be
+  configured outside the repository.
+- Payload-pack build and load validation rejects native libraries larger than 1.5 MiB per ABI and
+  verifies bootstrap/native file magic before accepting a pack.
 - Initial `cargo-fuzz` targets are implemented for AXML parsing, provider injection, APK
-  inspection, and APK rewrite. `scripts/check.sh` compile-checks the harnesses; release hardening
-  still needs sustained fuzz campaigns and regression triage.
+  inspection, and APK rewrite. `scripts/check.sh` compile-checks the harnesses.
+- Sustained fuzz campaign automation is implemented through `scripts/fuzz-campaign.sh`, including
+  committed regression replay, local libFuzzer artifact replay, per-target campaign logs, and a
+  scheduled/manual GitHub workflow that uploads campaign artifacts.
+- Release hardening still needs a successful long-duration pre-release fuzz run and triage of any
+  resulting artifacts into focused tests or `fuzz/regressions/<target>/` inputs.
+- Device-backed smoke validation has confirmed the patched native payload loads on an Android API 36
+  arm64 emulator and that monitor scans no longer repeat restricted `/proc/net` reads after
+  permission denial.
 
 ### Milestone 6: Release Candidate
 
