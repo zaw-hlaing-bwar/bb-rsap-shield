@@ -36,11 +36,17 @@ Remove temporary local copies after the secret is stored and verified.
 3. Start `.github/workflows/release-payload-pack.yml` manually or by pushing a
    protected `v*` tag.
 4. Confirm the workflow built `target/payload-pack/android-release`, printed
-   `payload_signing_public_key_hex`, and passed `rasp-cli verify-payload-pack`.
-5. Publish the payload-pack archive, archive SHA-256, `manifest.json`,
-   `signature.ed25519`, `sbom.json`, and public key together.
-6. Record the workflow run ID, commit SHA, tag, payload version, public key, and
-   archive SHA-256 in the release notes.
+   `payload_signing_public_key_hex`, passed `rasp-cli verify-payload-pack`, and
+   generated `rasp-shield-payload-pack-*.provenance.json`.
+5. Confirm the workflow created a GitHub artifact attestation for the payload
+   archive and that the provenance JSON records the workflow run ID, commit SHA,
+   Git ref, payload version, public key, archive SHA-256, manifest SHA-256,
+   signature SHA-256, SBOM SHA-256, NOTICE SHA-256, and payload file digests.
+6. Publish the payload-pack archive, archive SHA-256 sidecar, provenance JSON,
+   `manifest.json`, `signature.ed25519`, `sbom.json`, `licenses/NOTICE.txt`,
+   and public key together.
+7. Record the workflow run ID, commit SHA, tag, payload version, public key,
+   archive SHA-256, and attestation reference in the release notes.
 
 ## Rotation
 

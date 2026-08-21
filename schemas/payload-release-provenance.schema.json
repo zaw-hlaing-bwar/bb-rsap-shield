@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rasp-shield.local/schemas/payload-release-provenance.schema.json",
+  "title": "RASP Shield Payload Release Provenance",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "artifact_type",
+    "generated_at",
+    "repository",
+    "commit_sha",
+    "git_ref",
+    "workflow",
+    "workflow_run_id",
+    "workflow_run_attempt",
+    "payload_version",
+    "minimum_cli_version",
+    "maximum_cli_version",
+    "supported_platform",
+    "supported_abis",
+    "payload_signing_public_key_hex",
+    "archive",
+    "payload_pack"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "artifact_type": { "const": "RASP_SHIELD_PAYLOAD_RELEASE_PROVENANCE" },
+    "generated_at": { "type": "string", "minLength": 1 },
+    "repository": { "$ref": "#/$defs/nullable_string" },
+    "commit_sha": { "$ref": "#/$defs/nullable_string" },
+    "git_ref": { "$ref": "#/$defs/nullable_string" },
+    "workflow": { "$ref": "#/$defs/nullable_string" },
+    "workflow_run_id": { "$ref": "#/$defs/nullable_string" },
+    "workflow_run_attempt": { "$ref": "#/$defs/nullable_string" },
+    "payload_version": { "type": "string", "minLength": 1 },
+    "minimum_cli_version": { "type": "string", "minLength": 1 },
+    "maximum_cli_version": { "type": "string", "minLength": 1 },
+    "supported_platform": { "const": "android" },
+    "supported_abis": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "enum": ["arm64-v8a", "armeabi-v7a", "x86_64"] }
+    },
+    "payload_signing_public_key_hex": { "$ref": "#/$defs/fixed_hex_32" },
+    "archive": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "payload_pack": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "manifest_sha256",
+        "signature_sha256",
+        "sbom_sha256",
+        "notice_sha256",
+        "files"
+      ],
+      "properties": {
+        "manifest_sha256": { "$ref": "#/$defs/sha256" },
+        "signature_sha256": { "$ref": "#/$defs/sha256" },
+        "sbom_sha256": { "$ref": "#/$defs/sha256" },
+        "notice_sha256": { "$ref": "#/$defs/sha256" },
+        "files": {
+          "type": "object",
+          "required": ["bootstrap.dex", "sbom.json", "licenses/NOTICE.txt"],
+          "additionalProperties": { "$ref": "#/$defs/sha256" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "nullable_string": {
+      "type": ["string", "null"],
+      "minLength": 1
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[A-Fa-f0-9]{64}$"
+    },
+    "fixed_hex_32": {
+      "type": "string",
+      "pattern": "^[A-Fa-f0-9]{64}$"
+    }
+  }
+}

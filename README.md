@@ -595,6 +595,7 @@ JSON schemas are stored in `schemas/`:
 - `schemas/inspection-result.schema.json`
 - `schemas/payload-manifest.schema.json`
 - `schemas/payload-sbom.schema.json`
+- `schemas/payload-release-provenance.schema.json`
 - `schemas/signing-request.schema.json`
 - `schemas/verification-template.schema.json`
 - `schemas/verification-report.schema.json`

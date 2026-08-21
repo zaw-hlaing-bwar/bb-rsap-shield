@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "artifact_type": "RASP_SHIELD_PAYLOAD_RELEASE_PROVENANCE",
+  "generated_at": "2026-08-21T00:00:00+00:00",
+  "repository": "example/rasp-shield",
+  "commit_sha": "0123456789abcdef0123456789abcdef01234567",
+  "git_ref": "refs/tags/v0.1.0",
+  "workflow": "Release Payload Pack",
+  "workflow_run_id": "123456789",
+  "workflow_run_attempt": "1",
+  "payload_version": "0.1.0",
+  "minimum_cli_version": "0.1.0",
+  "maximum_cli_version": "0.x",
+  "supported_platform": "android",
+  "supported_abis": ["arm64-v8a", "armeabi-v7a", "x86_64"],
+  "payload_signing_public_key_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "archive": {
+    "path": "rasp-shield-payload-pack-0.1.0.tar.gz",
+    "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "payload_pack": {
+    "manifest_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "signature_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "sbom_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "notice_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "files": {
+      "arm64-v8a/libsecurity.so": "1111111111111111111111111111111111111111111111111111111111111111",
+      "armeabi-v7a/libsecurity.so": "2222222222222222222222222222222222222222222222222222222222222222",
+      "x86_64/libsecurity.so": "3333333333333333333333333333333333333333333333333333333333333333",
+      "bootstrap.dex": "4444444444444444444444444444444444444444444444444444444444444444",
+      "sbom.json": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "licenses/NOTICE.txt": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    }
+  }
+}

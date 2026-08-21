@@ -19,6 +19,10 @@ SCHEMA_FIXTURES = [
     ("schemas/runtime-smoke-report.schema.json", "fixtures/runtime-smoke-report.example.json"),
     ("schemas/payload-manifest.schema.json", "fixtures/payload-manifest.example.json"),
     ("schemas/payload-sbom.schema.json", "fixtures/payload-sbom.example.json"),
+    (
+        "schemas/payload-release-provenance.schema.json",
+        "fixtures/payload-release-provenance.example.json",
+    ),
     ("schemas/integrity-manifest.schema.json", "fixtures/integrity-manifest.example.json"),
 ]
 

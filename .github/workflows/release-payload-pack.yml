@@ -17,6 +17,9 @@ on:
 
 permissions:
   contents: read
+  attestations: write
+  id-token: write
+  artifact-metadata: write
 
 jobs:
   payload-pack:
@@ -70,16 +73,26 @@ jobs:
             --payload-signing-public-key-hex "${public_key}" | tee target/payload-pack-verify.log
           tar -czf "target/rasp-shield-payload-pack-${payload_version}.tar.gz" \
             -C target/payload-pack android-release
-          sha256sum "target/rasp-shield-payload-pack-${payload_version}.tar.gz" \
-            > "target/rasp-shield-payload-pack-${payload_version}.tar.gz.sha256"
+          python3 scripts/write-payload-release-provenance.py \
+            --payload-pack target/payload-pack/android-release \
+            --archive "target/rasp-shield-payload-pack-${payload_version}.tar.gz" \
+            --public-key-hex "${public_key}" \
+            --output "target/rasp-shield-payload-pack-${payload_version}.provenance.json" \
+            --sha256-output "target/rasp-shield-payload-pack-${payload_version}.tar.gz.sha256"
+      - name: Attest payload archive
+        uses: actions/attest@v4
+        with:
+          subject-path: target/rasp-shield-payload-pack-*.tar.gz
       - uses: actions/upload-artifact@v4
         with:
           name: rasp-shield-payload-pack-${{ github.run_id }}
           path: |
             target/rasp-shield-payload-pack-*.tar.gz
             target/rasp-shield-payload-pack-*.tar.gz.sha256
+            target/rasp-shield-payload-pack-*.provenance.json
             target/payload-pack/android-release/manifest.json
             target/payload-pack/android-release/signature.ed25519
             target/payload-pack/android-release/sbom.json
+            target/payload-pack/android-release/licenses/NOTICE.txt
             target/payload-pack-build.log
             target/payload-pack-verify.log

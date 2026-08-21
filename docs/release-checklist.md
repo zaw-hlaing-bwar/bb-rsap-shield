@@ -9,6 +9,8 @@
 - Payload manifest includes digests for SBOM and license notice.
 - Payload pack verifies with `rasp-cli verify-payload-pack` and the release public key.
 - Payload-pack archive SHA-256 is published with the release artifacts.
+- Payload-pack provenance JSON is published with release metadata.
+- Payload-pack archive has a GitHub artifact attestation tied to the release workflow run.
 - Transform React Native Hermes APK.
 - Transform React Native JSC APK.
 - Transform multidex APK.
@@ -32,7 +34,7 @@
 - Production payload signing follows `docs/payload-signing.md`.
 - Payload signing public key is published with the release artifacts.
 - Release notes record the workflow run ID, commit SHA, tag, payload version,
-  public key, and archive SHA-256.
+  public key, archive SHA-256, provenance JSON path, and attestation reference.
 - APK alignment verified before signing.
 - APK signature verification passes.
 - Expected certificate digest verification passes.
