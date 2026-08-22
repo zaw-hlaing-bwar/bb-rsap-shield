@@ -462,6 +462,38 @@ Use this in release CI after building or downloading a payload pack. It checks
 manifest metadata, required payload files, DEX/ELF file magic, native library
 size limits, SHA-256 file digests, and `signature.ed25519`.
 
+### `rasp-cli verify-release-provenance`
+
+Verifies release provenance, the published payload-pack archive digest, and the
+signed payload-pack directory together.
+
+```text
+Usage: rasp-cli verify-release-provenance --provenance <PROVENANCE> --archive <ARCHIVE> --payload-pack <PAYLOAD_PACK> --payload-signing-public-key-hex <PAYLOAD_SIGNING_PUBLIC_KEY_HEX>
+```
+
+Use this after downloading release artifacts or before publishing release notes.
+The command verifies that:
+
+- The supplied public key matches the provenance public key and verifies the
+  payload-pack signature.
+- The archive filename and SHA-256 match the provenance JSON.
+- Manifest metadata, supported ABIs, SBOM digest, NOTICE digest, signature
+  digest, and every payload file digest match the signed payload pack.
+- Optional expected repository, commit SHA, Git ref, workflow run ID, and
+  payload version match release metadata.
+
+Example:
+
+```sh
+rasp-cli verify-release-provenance \
+  --provenance rasp-shield-payload-pack-0.1.0.provenance.json \
+  --archive rasp-shield-payload-pack-0.1.0.tar.gz \
+  --payload-pack target/payload-pack/android-release \
+  --payload-signing-public-key-hex <payload-public-key-hex> \
+  --expected-git-ref refs/tags/v0.1.0 \
+  --expected-payload-version 0.1.0
+```
+
 ## Configuration Reference
 
 The config file is strict JSON. Unknown fields are rejected. See

@@ -19,7 +19,8 @@ use artifact_inspector::{inspect_apk, ApkSignatureScheme, InspectionResult};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use payload_pack::{
     build_payload_pack, load_payload_pack_verified, PayloadPack, PayloadPackBuildOptions,
-    PayloadPackError, PayloadSigningKey, PayloadVerificationKey, PAYLOAD_MANIFEST_FILE,
+    PayloadPackError, PayloadSbom, PayloadSigningKey, PayloadVerificationKey,
+    PAYLOAD_LICENSE_NOTICE_FILE, PAYLOAD_MANIFEST_FILE, PAYLOAD_SBOM_FILE, PAYLOAD_SIGNATURE_FILE,
 };
 use rasp_config::{
     is_valid_env_var_name, load_config, RaspConfig, RiskAction, CONFIG_SCHEMA_VERSION,
@@ -35,6 +36,7 @@ use runtime_test::{
     run_runtime_smoke_test, AdbTool, RuntimeSmokeError, RuntimeSmokeTestPlan,
     RuntimeSmokeTestReport, RuntimeSmokeTestResult,
 };
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 #[derive(Debug, Parser)]
@@ -60,6 +62,8 @@ enum Commands {
     BuildPayloadPack(BuildPayloadPackArgs),
     /// Verify a signed runtime payload pack with its Ed25519 public key.
     VerifyPayloadPack(VerifyPayloadPackArgs),
+    /// Verify release provenance, archive hash, and signed payload-pack digests.
+    VerifyReleaseProvenance(VerifyReleaseProvenanceArgs),
     /// Check host dependencies required by the Android pipeline.
     Doctor,
     /// Display CLI, payload, schema, and build version information.
@@ -162,6 +166,67 @@ struct VerifyPayloadPackArgs {
     payload_signing_public_key_hex: String,
 }
 
+#[derive(Debug, Args)]
+struct VerifyReleaseProvenanceArgs {
+    #[arg(long)]
+    provenance: PathBuf,
+    #[arg(long)]
+    archive: PathBuf,
+    #[arg(long)]
+    payload_pack: PathBuf,
+    #[arg(long)]
+    payload_signing_public_key_hex: String,
+    #[arg(long)]
+    expected_repository: Option<String>,
+    #[arg(long)]
+    expected_commit_sha: Option<String>,
+    #[arg(long)]
+    expected_git_ref: Option<String>,
+    #[arg(long)]
+    expected_workflow_run_id: Option<String>,
+    #[arg(long)]
+    expected_payload_version: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PayloadReleaseProvenance {
+    schema_version: u32,
+    artifact_type: String,
+    generated_at: String,
+    repository: Option<String>,
+    commit_sha: Option<String>,
+    git_ref: Option<String>,
+    workflow: Option<String>,
+    workflow_run_id: Option<String>,
+    workflow_run_attempt: Option<String>,
+    payload_version: String,
+    minimum_cli_version: String,
+    maximum_cli_version: String,
+    supported_platform: String,
+    supported_abis: Vec<String>,
+    payload_signing_public_key_hex: String,
+    archive: PayloadReleaseArchiveProvenance,
+    payload_pack: PayloadPackReleaseProvenance,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PayloadReleaseArchiveProvenance {
+    path: String,
+    sha256: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PayloadPackReleaseProvenance {
+    manifest_sha256: String,
+    signature_sha256: String,
+    sbom_sha256: String,
+    notice_sha256: String,
+    files: BTreeMap<String, String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum OutputFormat {
     Text,
@@ -196,6 +261,7 @@ fn run() -> RaspResult<ExitCode> {
         Commands::RuntimeSmoke(args) => runtime_smoke(args),
         Commands::BuildPayloadPack(args) => build_payload_pack_command(args),
         Commands::VerifyPayloadPack(args) => verify_payload_pack_command(args),
+        Commands::VerifyReleaseProvenance(args) => verify_release_provenance_command(args),
         Commands::Doctor => doctor(),
         Commands::Version => version(),
     }
@@ -682,6 +748,56 @@ fn verify_payload_pack_command(args: VerifyPayloadPackArgs) -> RaspResult<ExitCo
     Ok(ExitCode::Success)
 }
 
+fn verify_release_provenance_command(args: VerifyReleaseProvenanceArgs) -> RaspResult<ExitCode> {
+    validate_release_provenance_args(&args)?;
+
+    let provenance: PayloadReleaseProvenance =
+        read_json_file(&args.provenance, "payload release provenance")?;
+    let verification_key = PayloadVerificationKey::from_hex(&args.payload_signing_public_key_hex)
+        .map_err(payload_verify_error_into_rasp_error)?;
+    let pack = load_payload_pack_verified(
+        &args.payload_pack,
+        env!("CARGO_PKG_VERSION"),
+        &verification_key,
+    )
+    .map_err(payload_verify_error_into_rasp_error)?;
+
+    let mut failures = Vec::new();
+    verify_release_provenance_metadata(&args, &provenance, &mut failures);
+    verify_release_provenance_archive(&args.archive, &provenance, &mut failures)?;
+    verify_release_provenance_payload_pack(&args.payload_pack, &pack, &provenance, &mut failures)?;
+
+    if !failures.is_empty() {
+        return Err(RaspError::new(
+            ExitCode::VerificationFailure,
+            format!(
+                "release provenance verification failed: {}",
+                failures.join("; ")
+            ),
+        ));
+    }
+
+    println!("release_provenance: {}", args.provenance.display());
+    println!("payload_pack: {}", pack.root.display());
+    println!("archive: {}", args.archive.display());
+    println!("payload_version: {}", provenance.payload_version);
+    println!(
+        "archive_sha256: {}",
+        provenance.archive.sha256.to_ascii_lowercase()
+    );
+    println!(
+        "workflow_run_id: {}",
+        provenance.workflow_run_id.as_deref().unwrap_or("null")
+    );
+    println!(
+        "commit_sha: {}",
+        provenance.commit_sha.as_deref().unwrap_or("null")
+    );
+    println!("result: PASS");
+
+    Ok(ExitCode::Success)
+}
+
 fn validate_payload_build_args(args: &BuildPayloadPackArgs) -> RaspResult<()> {
     if args.output.as_os_str().is_empty() {
         return Err(RaspError::new(
@@ -737,6 +853,395 @@ fn validate_payload_verify_args(args: &VerifyPayloadPackArgs) -> RaspResult<()> 
         ));
     }
     Ok(())
+}
+
+fn validate_release_provenance_args(args: &VerifyReleaseProvenanceArgs) -> RaspResult<()> {
+    if !args.provenance.is_file() {
+        return Err(RaspError::new(
+            ExitCode::InvalidCliArguments,
+            format!(
+                "--provenance must be an existing file: {}",
+                args.provenance.display()
+            ),
+        ));
+    }
+    if !args.archive.is_file() {
+        return Err(RaspError::new(
+            ExitCode::InvalidCliArguments,
+            format!(
+                "--archive must be an existing file: {}",
+                args.archive.display()
+            ),
+        ));
+    }
+    if !args.payload_pack.is_dir() {
+        return Err(RaspError::new(
+            ExitCode::InvalidCliArguments,
+            format!(
+                "--payload-pack must be an existing directory: {}",
+                args.payload_pack.display()
+            ),
+        ));
+    }
+    if !is_hex_sha256(&args.payload_signing_public_key_hex) {
+        return Err(RaspError::new(
+            ExitCode::InvalidCliArguments,
+            "--payload-signing-public-key-hex must be 64 hex characters",
+        ));
+    }
+    for (name, value) in [
+        ("--expected-repository", args.expected_repository.as_deref()),
+        ("--expected-commit-sha", args.expected_commit_sha.as_deref()),
+        ("--expected-git-ref", args.expected_git_ref.as_deref()),
+        (
+            "--expected-workflow-run-id",
+            args.expected_workflow_run_id.as_deref(),
+        ),
+        (
+            "--expected-payload-version",
+            args.expected_payload_version.as_deref(),
+        ),
+    ] {
+        if value.is_some_and(|value| value.trim().is_empty()) {
+            return Err(RaspError::new(
+                ExitCode::InvalidCliArguments,
+                format!("{name} must not be empty"),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn verify_release_provenance_metadata(
+    args: &VerifyReleaseProvenanceArgs,
+    provenance: &PayloadReleaseProvenance,
+    failures: &mut Vec<String>,
+) {
+    if provenance.schema_version != 1 {
+        failures.push(format!(
+            "schema_version expected 1, got {}",
+            provenance.schema_version
+        ));
+    }
+    if provenance.artifact_type != "RASP_SHIELD_PAYLOAD_RELEASE_PROVENANCE" {
+        failures.push(format!(
+            "artifact_type expected RASP_SHIELD_PAYLOAD_RELEASE_PROVENANCE, got {}",
+            provenance.artifact_type
+        ));
+    }
+    if provenance.generated_at.trim().is_empty() {
+        failures.push("generated_at must not be empty".to_string());
+    }
+    if provenance.supported_platform != "android" {
+        failures.push(format!(
+            "supported_platform expected android, got {}",
+            provenance.supported_platform
+        ));
+    }
+    if provenance.supported_abis.is_empty() {
+        failures.push("supported_abis must not be empty".to_string());
+    }
+    for abi in &provenance.supported_abis {
+        if !is_supported_payload_abi(abi) {
+            failures.push(format!("unsupported ABI in provenance: {abi}"));
+        }
+    }
+    if !is_hex_sha256(&provenance.payload_signing_public_key_hex) {
+        failures.push("payload_signing_public_key_hex must be 64 hex characters".to_string());
+    } else if !provenance
+        .payload_signing_public_key_hex
+        .eq_ignore_ascii_case(&args.payload_signing_public_key_hex)
+    {
+        failures.push("payload signing public key does not match provenance".to_string());
+    }
+
+    validate_optional_provenance_field("repository", provenance.repository.as_deref(), failures);
+    validate_optional_provenance_field("commit_sha", provenance.commit_sha.as_deref(), failures);
+    validate_optional_provenance_field("git_ref", provenance.git_ref.as_deref(), failures);
+    validate_optional_provenance_field("workflow", provenance.workflow.as_deref(), failures);
+    validate_optional_provenance_field(
+        "workflow_run_id",
+        provenance.workflow_run_id.as_deref(),
+        failures,
+    );
+    validate_optional_provenance_field(
+        "workflow_run_attempt",
+        provenance.workflow_run_attempt.as_deref(),
+        failures,
+    );
+
+    expect_optional_metadata(
+        "repository",
+        provenance.repository.as_deref(),
+        args.expected_repository.as_deref(),
+        failures,
+    );
+    expect_optional_metadata(
+        "commit_sha",
+        provenance.commit_sha.as_deref(),
+        args.expected_commit_sha.as_deref(),
+        failures,
+    );
+    expect_optional_metadata(
+        "git_ref",
+        provenance.git_ref.as_deref(),
+        args.expected_git_ref.as_deref(),
+        failures,
+    );
+    expect_optional_metadata(
+        "workflow_run_id",
+        provenance.workflow_run_id.as_deref(),
+        args.expected_workflow_run_id.as_deref(),
+        failures,
+    );
+    expect_string_metadata(
+        "payload_version",
+        &provenance.payload_version,
+        args.expected_payload_version.as_deref(),
+        failures,
+    );
+}
+
+fn verify_release_provenance_archive(
+    archive: &Path,
+    provenance: &PayloadReleaseProvenance,
+    failures: &mut Vec<String>,
+) -> RaspResult<()> {
+    let actual_archive_name = archive
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+    if actual_archive_name.is_empty() {
+        failures.push(format!(
+            "archive file name is not UTF-8: {}",
+            archive.display()
+        ));
+    } else if provenance.archive.path != actual_archive_name {
+        failures.push(format!(
+            "archive path expected {}, got {}",
+            provenance.archive.path, actual_archive_name
+        ));
+    }
+
+    let actual_digest = sha256_file(archive)?;
+    expect_digest(
+        "archive.sha256",
+        &provenance.archive.sha256,
+        &actual_digest,
+        failures,
+    );
+    Ok(())
+}
+
+fn verify_release_provenance_payload_pack(
+    payload_pack_root: &Path,
+    pack: &PayloadPack,
+    provenance: &PayloadReleaseProvenance,
+    failures: &mut Vec<String>,
+) -> RaspResult<()> {
+    expect_string_match(
+        "payload_version",
+        &provenance.payload_version,
+        &pack.manifest.payload_version,
+        failures,
+    );
+    expect_string_match(
+        "minimum_cli_version",
+        &provenance.minimum_cli_version,
+        &pack.manifest.minimum_cli_version,
+        failures,
+    );
+    expect_string_match(
+        "maximum_cli_version",
+        &provenance.maximum_cli_version,
+        &pack.manifest.maximum_cli_version,
+        failures,
+    );
+    expect_string_match(
+        "supported_platform",
+        &provenance.supported_platform,
+        &pack.manifest.supported_platform,
+        failures,
+    );
+    if provenance.supported_abis != pack.manifest.supported_abis {
+        failures.push(format!(
+            "supported_abis expected {:?}, got {:?}",
+            provenance.supported_abis, pack.manifest.supported_abis
+        ));
+    }
+
+    expect_path_digest(
+        "payload_pack.manifest_sha256",
+        &provenance.payload_pack.manifest_sha256,
+        &payload_pack_root.join(PAYLOAD_MANIFEST_FILE),
+        failures,
+    )?;
+    expect_path_digest(
+        "payload_pack.signature_sha256",
+        &provenance.payload_pack.signature_sha256,
+        &payload_pack_root.join(PAYLOAD_SIGNATURE_FILE),
+        failures,
+    )?;
+    expect_path_digest(
+        "payload_pack.sbom_sha256",
+        &provenance.payload_pack.sbom_sha256,
+        &payload_pack_root.join(PAYLOAD_SBOM_FILE),
+        failures,
+    )?;
+    expect_path_digest(
+        "payload_pack.notice_sha256",
+        &provenance.payload_pack.notice_sha256,
+        &payload_pack_root.join(PAYLOAD_LICENSE_NOTICE_FILE),
+        failures,
+    )?;
+    verify_release_provenance_file_map(
+        &pack.manifest.files,
+        &provenance.payload_pack.files,
+        failures,
+    );
+
+    let sbom_path = payload_pack_root.join(PAYLOAD_SBOM_FILE);
+    let sbom: PayloadSbom = read_json_file(&sbom_path, "payload SBOM")?;
+    verify_payload_sbom_against_manifest(&sbom, pack, failures);
+
+    Ok(())
+}
+
+fn verify_release_provenance_file_map(
+    manifest_files: &BTreeMap<String, String>,
+    provenance_files: &BTreeMap<String, String>,
+    failures: &mut Vec<String>,
+) {
+    for (path, provenance_digest) in provenance_files {
+        match manifest_files.get(path) {
+            Some(manifest_digest) => expect_digest(
+                format!("payload_pack.files.{path}").as_str(),
+                provenance_digest,
+                manifest_digest,
+                failures,
+            ),
+            None => failures.push(format!(
+                "provenance payload_pack.files contains non-manifest path {path}"
+            )),
+        }
+    }
+
+    for path in manifest_files.keys() {
+        if !provenance_files.contains_key(path) {
+            failures.push(format!(
+                "provenance payload_pack.files is missing manifest path {path}"
+            ));
+        }
+    }
+}
+
+fn verify_payload_sbom_against_manifest(
+    sbom: &PayloadSbom,
+    pack: &PayloadPack,
+    failures: &mut Vec<String>,
+) {
+    if sbom.schema_version != 1 {
+        failures.push(format!(
+            "sbom.schema_version expected 1, got {}",
+            sbom.schema_version
+        ));
+    }
+    if sbom.sbom_type != "RASP_SHIELD_PAYLOAD_SBOM" {
+        failures.push(format!(
+            "sbom.sbom_type expected RASP_SHIELD_PAYLOAD_SBOM, got {}",
+            sbom.sbom_type
+        ));
+    }
+    expect_string_match(
+        "sbom.payload_version",
+        &sbom.payload_version,
+        &pack.manifest.payload_version,
+        failures,
+    );
+
+    for (index, component) in sbom.components.iter().enumerate() {
+        match pack.manifest.files.get(&component.path) {
+            Some(manifest_digest) => expect_digest(
+                format!("sbom.components[{index}].sha256").as_str(),
+                &component.sha256,
+                manifest_digest,
+                failures,
+            ),
+            None => failures.push(format!(
+                "sbom.components[{index}] references non-manifest path {}",
+                component.path
+            )),
+        }
+    }
+}
+
+fn validate_optional_provenance_field(name: &str, value: Option<&str>, failures: &mut Vec<String>) {
+    if value.is_some_and(|value| value.trim().is_empty()) {
+        failures.push(format!("{name} must be null or a non-empty string"));
+    }
+}
+
+fn expect_optional_metadata(
+    name: &str,
+    actual: Option<&str>,
+    expected: Option<&str>,
+    failures: &mut Vec<String>,
+) {
+    if let Some(expected) = expected {
+        match actual {
+            Some(actual) if actual == expected => {}
+            Some(actual) => failures.push(format!("{name} expected {expected}, got {actual}")),
+            None => failures.push(format!("{name} expected {expected}, got null")),
+        }
+    }
+}
+
+fn expect_string_metadata(
+    name: &str,
+    actual: &str,
+    expected: Option<&str>,
+    failures: &mut Vec<String>,
+) {
+    if let Some(expected) = expected {
+        expect_string_match(name, expected, actual, failures);
+    }
+}
+
+fn expect_string_match(name: &str, expected: &str, actual: &str, failures: &mut Vec<String>) {
+    if expected != actual {
+        failures.push(format!("{name} expected {expected}, got {actual}"));
+    }
+}
+
+fn expect_path_digest(
+    name: &str,
+    expected_digest: &str,
+    path: &Path,
+    failures: &mut Vec<String>,
+) -> RaspResult<()> {
+    let actual_digest = sha256_file(path)?;
+    expect_digest(name, expected_digest, &actual_digest, failures);
+    Ok(())
+}
+
+fn expect_digest(
+    name: &str,
+    expected_digest: &str,
+    actual_digest: &str,
+    failures: &mut Vec<String>,
+) {
+    if !is_hex_sha256(expected_digest) {
+        failures.push(format!("{name} must be a 64-character SHA-256 digest"));
+        return;
+    }
+    if !expected_digest.eq_ignore_ascii_case(actual_digest) {
+        failures.push(format!(
+            "{name} expected {}, got {}",
+            expected_digest.to_ascii_lowercase(),
+            actual_digest.to_ascii_lowercase()
+        ));
+    }
 }
 
 fn parse_native_library_args(values: &[String]) -> RaspResult<BTreeMap<String, PathBuf>> {
@@ -1998,6 +2503,21 @@ fn write_json_file(path: &Path, value: &impl serde::Serialize) -> RaspResult<()>
     })
 }
 
+fn read_json_file<T: serde::de::DeserializeOwned>(path: &Path, label: &str) -> RaspResult<T> {
+    let bytes = fs::read(path).map_err(|error| {
+        RaspError::new(
+            ExitCode::GeneralProcessingFailure,
+            format!("failed to read {label} {}: {error}", path.display()),
+        )
+    })?;
+    serde_json::from_slice(&bytes).map_err(|error| {
+        RaspError::new(
+            ExitCode::VerificationFailure,
+            format!("failed to parse {label} {}: {error}", path.display()),
+        )
+    })
+}
+
 fn is_hex_sha256(value: &str) -> bool {
     value.len() == 64 && value.chars().all(|character| character.is_ascii_hexdigit())
 }
@@ -2271,14 +2791,19 @@ mod tests {
     use super::{
         default_payload_maximum_cli_version, default_signed_apk_path, integrity_runtime_policy,
         is_hex_sha256, parse_native_library_args, protected_asset_paths,
-        selected_payload_abi_libraries, sibling_json_path, validate_shield_compatibility,
+        selected_payload_abi_libraries, sha256_file, sibling_json_path,
+        validate_shield_compatibility, verify_release_provenance_command,
+        VerifyReleaseProvenanceArgs,
     };
     use android_apk::IntegrityProtectedAssetKind;
     use artifact_inspector::{FlutterInfo, InspectionResult};
+    use payload_pack::{build_payload_pack, PayloadPackBuildOptions, PayloadSigningKey};
     use rasp_config::parse_config;
     use rasp_core::ExitCode;
     use std::collections::BTreeMap;
+    use std::fs;
     use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn derives_default_external_artifact_paths() {
@@ -2477,6 +3002,28 @@ mod tests {
         );
     }
 
+    #[test]
+    fn verifies_release_provenance_for_signed_payload_pack() {
+        let release = test_payload_release("verify-release-provenance");
+
+        let result = verify_release_provenance_command(release.args())
+            .expect("release provenance should verify");
+
+        assert_eq!(result, ExitCode::Success);
+    }
+
+    #[test]
+    fn rejects_release_provenance_archive_digest_mismatch() {
+        let release = test_payload_release("verify-release-provenance-mismatch");
+        fs::write(&release.archive, b"mutated archive").expect("mutate archive");
+
+        let error = verify_release_provenance_command(release.args())
+            .expect_err("archive digest mismatch should fail");
+
+        assert_eq!(error.exit_code(), ExitCode::VerificationFailure);
+        assert!(error.message().contains("archive.sha256"));
+    }
+
     fn example_config() -> rasp_config::RaspConfig {
         parse_config(include_str!("../../../fixtures/rasp.config.example.json"))
             .expect("example config should parse")
@@ -2491,5 +3038,114 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    struct TestPayloadRelease {
+        payload_pack: PathBuf,
+        archive: PathBuf,
+        provenance: PathBuf,
+        public_key_hex: String,
+    }
+
+    impl TestPayloadRelease {
+        fn args(&self) -> VerifyReleaseProvenanceArgs {
+            VerifyReleaseProvenanceArgs {
+                provenance: self.provenance.clone(),
+                archive: self.archive.clone(),
+                payload_pack: self.payload_pack.clone(),
+                payload_signing_public_key_hex: self.public_key_hex.clone(),
+                expected_repository: Some("example/rasp-shield".to_string()),
+                expected_commit_sha: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
+                expected_git_ref: Some("refs/tags/v-test".to_string()),
+                expected_workflow_run_id: Some("123456789".to_string()),
+                expected_payload_version: Some("test-payload".to_string()),
+            }
+        }
+    }
+
+    fn test_payload_release(prefix: &str) -> TestPayloadRelease {
+        let root = create_temp_dir(prefix);
+        let build_input = root.join("build-input");
+        fs::create_dir_all(&build_input).expect("create build input");
+        let bootstrap_dex = build_input.join("bootstrap.dex");
+        let native_library = build_input.join("libsecurity.so");
+        fs::write(&bootstrap_dex, b"dex\n035\0test bootstrap").expect("write bootstrap DEX");
+        fs::write(&native_library, b"\x7fELFtest native").expect("write native library");
+
+        let signing_key_hex = "11".repeat(32);
+        let signing_key = PayloadSigningKey::from_hex(&signing_key_hex).expect("signing key");
+        let report = build_payload_pack(
+            &PayloadPackBuildOptions {
+                output_root: root.join("payload-pack"),
+                bootstrap_dex_path: bootstrap_dex,
+                abi_libraries: BTreeMap::from([("arm64-v8a".to_string(), native_library)]),
+                payload_version: "test-payload".to_string(),
+                minimum_cli_version: env!("CARGO_PKG_VERSION").to_string(),
+                maximum_cli_version: "0.x".to_string(),
+            },
+            &signing_key,
+        )
+        .expect("build payload pack");
+
+        let archive = root.join("rasp-shield-payload-pack-test-payload.tar.gz");
+        fs::write(&archive, b"payload archive bytes").expect("write archive");
+        let provenance = root.join("rasp-shield-payload-pack-test-payload.provenance.json");
+        let archive_sha256 = sha256_file(&archive).expect("archive digest");
+        let manifest_sha256 = sha256_file(&report.manifest_path).expect("manifest digest");
+        let signature_sha256 = sha256_file(&report.signature_path).expect("signature digest");
+        let sbom_sha256 = sha256_file(&report.root.join("sbom.json")).expect("SBOM digest");
+        let notice_sha256 =
+            sha256_file(&report.root.join("licenses/NOTICE.txt")).expect("NOTICE digest");
+        let body = serde_json::json!({
+            "schema_version": 1,
+            "artifact_type": "RASP_SHIELD_PAYLOAD_RELEASE_PROVENANCE",
+            "generated_at": "2026-08-24T00:00:00+00:00",
+            "repository": "example/rasp-shield",
+            "commit_sha": "0123456789abcdef0123456789abcdef01234567",
+            "git_ref": "refs/tags/v-test",
+            "workflow": "Release Payload Pack",
+            "workflow_run_id": "123456789",
+            "workflow_run_attempt": "1",
+            "payload_version": report.payload_version,
+            "minimum_cli_version": env!("CARGO_PKG_VERSION"),
+            "maximum_cli_version": "0.x",
+            "supported_platform": "android",
+            "supported_abis": report.supported_abis,
+            "payload_signing_public_key_hex": report.payload_signing_public_key_hex,
+            "archive": {
+                "path": "rasp-shield-payload-pack-test-payload.tar.gz",
+                "sha256": archive_sha256,
+            },
+            "payload_pack": {
+                "manifest_sha256": manifest_sha256,
+                "signature_sha256": signature_sha256,
+                "sbom_sha256": sbom_sha256,
+                "notice_sha256": notice_sha256,
+                "files": report.files,
+            },
+        });
+        fs::write(
+            &provenance,
+            serde_json::to_string_pretty(&body).expect("serialize provenance"),
+        )
+        .expect("write provenance");
+
+        TestPayloadRelease {
+            payload_pack: report.root,
+            archive,
+            provenance,
+            public_key_hex: signing_key.public_key_hex(),
+        }
+    }
+
+    fn create_temp_dir(prefix: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("rasp-cli-{prefix}-{}-{nonce}", std::process::id()));
+        fs::create_dir_all(&root).expect("create temp dir");
+        root
     }
 }

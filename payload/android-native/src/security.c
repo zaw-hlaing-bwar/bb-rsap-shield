@@ -105,8 +105,8 @@ static const char *const k_native_hook_tokens[] = {
 };
 
 static const char *const k_frida_thread_tokens[] = {
-    "frida", "gum-js-loop", "pool-frida", "frida-helper", "frida-agent",
-    "frida-dbgsignal", "gum-js",
+    "frida", "re.frida", "gum-js-loop", "pool-frida", "frida-helper",
+    "frida-agent", "frida-dbgsignal", "frida-gadget", "linjector", "gum-js",
 };
 
 static const char *const k_glib_thread_tokens[] = {
@@ -119,6 +119,7 @@ static const char *const k_unix_socket_tokens[] = {
 
 static const char *const k_environment_tokens[] = {
     "LD_PRELOAD", "frida", "gum-js", "xposed", "zygisk", "substrate",
+    "dobby",      "shadowhook", "xhook", "whale", "libhooker", "hookzz",
 };
 
 static const char *const k_root_su_paths[] = {
@@ -332,6 +333,101 @@ static int rasp_parse_maps_range_and_permissions(const char *line,
   }
 
   return sscanf(line, "%llx-%llx %4s", start, end, permissions) == 3;
+}
+
+static int rasp_parse_maps_metadata(const char *line, char permissions[5],
+                                    char device[16],
+                                    unsigned long long *inode, char *path,
+                                    size_t path_size) {
+  unsigned long long start = 0ULL;
+  unsigned long long end = 0ULL;
+  unsigned long long offset = 0ULL;
+  char parsed_path[512] = {0};
+  int parsed;
+
+  if (line == NULL || permissions == NULL || device == NULL || inode == NULL) {
+    return 0;
+  }
+
+  permissions[0] = '\0';
+  device[0] = '\0';
+  *inode = 0ULL;
+  if (path != NULL && path_size > 0U) {
+    path[0] = '\0';
+  }
+
+  parsed = sscanf(line, "%llx-%llx %4s %llx %15s %llu %511[^\n]", &start,
+                  &end, permissions, &offset, device, inode, parsed_path);
+  if (parsed < 6 || end <= start) {
+    return 0;
+  }
+
+  if (parsed >= 7 && path != NULL && path_size > 0U) {
+    rasp_copy_string(path, path_size, parsed_path);
+  }
+
+  return 1;
+}
+
+static int rasp_maps_permissions_are_executable(const char *permissions) {
+  return permissions != NULL && strlen(permissions) >= 3U &&
+         permissions[2] == 'x';
+}
+
+static int rasp_maps_line_is_deleted_executable_library(const char *line) {
+  char permissions[5];
+  char device[16];
+  char path[512];
+  unsigned long long inode = 0ULL;
+
+  if (!rasp_parse_maps_metadata(line, permissions, device, &inode, path,
+                                sizeof(path))) {
+    return 0;
+  }
+  if (!rasp_maps_permissions_are_executable(permissions)) {
+    return 0;
+  }
+  if (!rasp_contains_case_insensitive(path, "(deleted)")) {
+    return 0;
+  }
+
+  return rasp_contains_case_insensitive(path, ".so") ||
+         rasp_contains_case_insensitive(path, "/lib");
+}
+
+static int rasp_maps_path_is_common_runtime_executable(const char *path) {
+  static const char *const common_tokens[] = {
+      "[vdso]", "[vvar]", "dalvik", "jit", "art", "boot.oat",
+      "boot.art", "oat", "odex", "dex", "v8",
+  };
+
+  return rasp_first_matching_token(
+             path, common_tokens,
+             sizeof(common_tokens) / sizeof(common_tokens[0])) != NULL;
+}
+
+static int rasp_maps_line_is_suspicious_anonymous_executable(const char *line) {
+  char permissions[5];
+  char device[16];
+  char path[512];
+  unsigned long long inode = 0ULL;
+
+  if (!rasp_parse_maps_metadata(line, permissions, device, &inode, path,
+                                sizeof(path))) {
+    return 0;
+  }
+  if (!rasp_maps_permissions_are_executable(permissions)) {
+    return 0;
+  }
+  if (strcmp(device, "00:00") != 0 || inode != 0ULL) {
+    return 0;
+  }
+  if (rasp_maps_path_is_common_runtime_executable(path)) {
+    return 0;
+  }
+
+  return path[0] == '\0' || path[0] == '[' ||
+         rasp_contains_case_insensitive(path, "memfd:");
 }
 
 static void rasp_report_add_signal(RaspSecurityReport *report, const char *id,
@@ -658,6 +754,18 @@ static void rasp_scan_maps_line(const char *line, RaspSecurityReport *report) {
                            RASP_CATEGORY_MEMORY, 55U, 35U, 15U,
                            "rwx mapping");
   }
+
+  if (rasp_maps_line_is_deleted_executable_library(line)) {
+    rasp_report_add_signal(report, "memory.deleted_executable_library",
+                           RASP_CATEGORY_MEMORY, 65U, 55U, 20U,
+                           "deleted executable library mapping");
+  }
+
+  if (rasp_maps_line_is_suspicious_anonymous_executable(line)) {
+    rasp_report_add_signal(report, "memory.anonymous_executable_map",
+                           RASP_CATEGORY_MEMORY, 45U, 35U, 10U,
+                           "anonymous executable mapping");
+  }
 }
 
 static void rasp_scan_maps_path(const char *path, RaspSecurityReport *report) {
@@ -830,7 +938,11 @@ static void rasp_scan_status_line(const char *line, RaspSecurityReport *report) 
 
   errno = 0;
   tracer_pid = strtol(cursor, &end, 10);
-  if (errno == 0 && end != cursor && tracer_pid > 0L) {
+  while (end != NULL && *end != '\0' && isspace((unsigned char)*end)) {
+    end++;
+  }
+  if (errno == 0 && end != cursor && end != NULL && *end == '\0' &&
+      tracer_pid > 0L) {
     rasp_report_add_signal(report, "debugger.tracer_pid", RASP_CATEGORY_DEBUGGER,
                            95U, 80U, 30U, "TracerPid");
   }
@@ -1066,6 +1178,24 @@ static int rasp_apply_runtime_detector_policy_to_signal(
     }
     signal->weight =
         rasp_cap_signal_weight(signal->weight, policy->memory_integrity_weight);
+    return 1;
+  }
+
+  if (rasp_signal_category_equals(signal, RASP_CATEGORY_ROOT)) {
+    if (policy->root_detection_enabled == 0U) {
+      return 0;
+    }
+    signal->weight =
+        rasp_cap_signal_weight(signal->weight, policy->root_detection_weight);
+    return 1;
+  }
+
+  if (rasp_signal_category_equals(signal, RASP_CATEGORY_EMULATOR)) {
+    if (policy->emulator_detection_enabled == 0U) {
+      return 0;
+    }
+    signal->weight =
+        rasp_cap_signal_weight(signal->weight, policy->emulator_detection_weight);
     return 1;
   }
 

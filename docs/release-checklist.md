@@ -10,6 +10,8 @@
 - Payload pack verifies with `rasp-cli verify-payload-pack` and the release public key.
 - Payload-pack archive SHA-256 is published with the release artifacts.
 - Payload-pack provenance JSON is published with release metadata.
+- `rasp-cli verify-release-provenance` passes for the archive, provenance JSON,
+  payload-pack directory, public key, and expected release metadata.
 - Payload-pack archive has a GitHub artifact attestation tied to the release workflow run.
 - Transform React Native Hermes APK.
 - Transform React Native JSC APK.

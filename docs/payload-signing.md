@@ -42,10 +42,12 @@ Remove temporary local copies after the secret is stored and verified.
    archive and that the provenance JSON records the workflow run ID, commit SHA,
    Git ref, payload version, public key, archive SHA-256, manifest SHA-256,
    signature SHA-256, SBOM SHA-256, NOTICE SHA-256, and payload file digests.
-6. Publish the payload-pack archive, archive SHA-256 sidecar, provenance JSON,
+6. Run `rasp-cli verify-release-provenance` with the public key and expected
+   release metadata before publishing release notes.
+7. Publish the payload-pack archive, archive SHA-256 sidecar, provenance JSON,
    `manifest.json`, `signature.ed25519`, `sbom.json`, `licenses/NOTICE.txt`,
    and public key together.
-7. Record the workflow run ID, commit SHA, tag, payload version, public key,
+8. Record the workflow run ID, commit SHA, tag, payload version, public key,
    archive SHA-256, and attestation reference in the release notes.
 
 ## Rotation

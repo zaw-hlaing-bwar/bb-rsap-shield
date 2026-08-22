@@ -53,6 +53,32 @@ static void caps_risk_score(void) {
   assert(report.action == RASP_SECURITY_ACTION_REPORT);
 }
 
+static void detects_deleted_executable_library_maps(void) {
+  static const char maps[] =
+      "71000000-71100000 r-xp 00000000 00:00 0 "
+      "/data/local/tmp/libpayment.so (deleted)\n";
+  RaspSecurityReport report;
+
+  assert(rasp_security_test_scan_maps_text(maps, &report) == 0);
+  assert(has_signal(&report, "memory.deleted_executable_library"));
+  assert(report.risk_score == 20U);
+  assert(report.action == RASP_SECURITY_ACTION_REPORT);
+}
+
+static void detects_suspicious_anonymous_executable_maps(void) {
+  static const char maps[] =
+      "71000000-71100000 r-xp 00000000 00:00 0 [anon:agent-code]\n"
+      "71100000-71200000 r-xp 00000000 00:00 0 [anon:dalvik-jit-code-cache]\n"
+      "71200000-71300000 r-xp 00000000 00:00 0 [vdso]\n";
+  RaspSecurityReport report;
+
+  assert(rasp_security_test_scan_maps_text(maps, &report) == 0);
+  assert(has_signal(&report, "memory.anonymous_executable_map"));
+  assert(report.signal_count == 1U);
+  assert(report.risk_score == 10U);
+  assert(report.action == RASP_SECURITY_ACTION_ALLOW);
+}
+
 static void detects_thread_names(void) {
   RaspSecurityReport report;
 
@@ -65,6 +91,11 @@ static void detects_thread_names(void) {
   assert(has_signal(&report, "instrumentation.glib_thread"));
   assert(report.risk_score == 20U);
   assert(report.action == RASP_SECURITY_ACTION_REPORT);
+
+  assert(rasp_security_test_scan_thread_name("re.frida.server", &report) == 0);
+  assert(has_signal(&report, "instrumentation.frida_thread"));
+  assert(report.risk_score == 35U);
+  assert(report.action == RASP_SECURITY_ACTION_REPORT);
 }
 
 static void detects_tracer_pid(void) {
@@ -75,6 +106,17 @@ static void detects_tracer_pid(void) {
   assert(has_signal(&report, "debugger.tracer_pid"));
   assert(report.risk_score == 30U);
   assert(report.action == RASP_SECURITY_ACTION_REPORT);
+}
+
+static void ignores_malformed_tracer_pid_values(void) {
+  RaspSecurityReport report;
+
+  assert(rasp_security_test_scan_status_text(
+             "Name:\tapp\nTracerPid:\t42abc\nTracerPid:\t-1\nTracerPid:\t0\n",
+             &report) == 0);
+  assert(!has_signal(&report, "debugger.tracer_pid"));
+  assert(report.risk_score == 0U);
+  assert(report.action == RASP_SECURITY_ACTION_ALLOW);
 }
 
 static void detects_frida_default_ports(void) {
@@ -118,6 +160,17 @@ static void detects_suspicious_environment(void) {
   assert(report.action == RASP_SECURITY_ACTION_REPORT);
 }
 
+static void detects_native_hook_environment(void) {
+  RaspSecurityReport report;
+
+  assert(rasp_security_test_scan_environment_text(
+             "PATH=/system/bin\nRASP_TEST_LIB=/data/local/tmp/libshadowhook.so\n",
+             &report) == 0);
+  assert(has_signal(&report, "instrumentation.suspicious_environment"));
+  assert(report.risk_score == 25U);
+  assert(report.action == RASP_SECURITY_ACTION_REPORT);
+}
+
 static void runtime_policy_disables_instrumentation_signals(void) {
   static const char maps[] =
       "70000000-70100000 r-xp 00000000 fd:00 1 /data/app/libfrida-gadget.so\n"
@@ -149,6 +202,31 @@ static void runtime_policy_caps_debugger_signal_weight(void) {
   assert(has_signal(&report, "debugger.tracer_pid"));
   assert(signal_weight(&report, "debugger.tracer_pid") == 10U);
   assert(report.risk_score == 10U);
+  assert(report.action == RASP_SECURITY_ACTION_ALLOW);
+}
+
+static void runtime_policy_filters_root_and_emulator_signals(void) {
+  RaspSecurityPolicy policy = rasp_security_default_policy();
+  RaspSecurityReport report;
+
+  policy.root_detection_enabled = 0U;
+  assert(rasp_security_test_scan_root_paths_text("/system/xbin/su", &report) == 0);
+  assert(rasp_security_test_apply_runtime_detector_policy(&report, &policy) == 0);
+  assert(rasp_security_apply_policy(&report, &policy) == 0);
+  assert(!has_signal(&report, "root.su_binary"));
+  assert(report.risk_score == 0U);
+  assert(report.action == RASP_SECURITY_ACTION_ALLOW);
+
+  policy = rasp_security_default_policy();
+  policy.emulator_detection_enabled = 0U;
+  assert(rasp_security_test_scan_emulator_properties_text(
+             "ro.kernel.qemu=1\nro.hardware=ranchu\n",
+             &report) == 0);
+  assert(rasp_security_test_apply_runtime_detector_policy(&report, &policy) == 0);
+  assert(rasp_security_apply_policy(&report, &policy) == 0);
+  assert(!has_signal(&report, "emulator.qemu_property"));
+  assert(!has_signal(&report, "emulator.build_profile"));
+  assert(report.risk_score == 0U);
   assert(report.action == RASP_SECURITY_ACTION_ALLOW);
 }
 
@@ -291,14 +369,19 @@ static void emits_json_report(void) {
 int main(void) {
   detects_instrumentation_maps();
   caps_risk_score();
+  detects_deleted_executable_library_maps();
+  detects_suspicious_anonymous_executable_maps();
   detects_thread_names();
   detects_tracer_pid();
+  ignores_malformed_tracer_pid_values();
   detects_frida_default_ports();
   detects_frida_unix_socket();
   disables_proc_net_scans_after_permission_denial();
   detects_suspicious_environment();
+  detects_native_hook_environment();
   runtime_policy_disables_instrumentation_signals();
   runtime_policy_caps_debugger_signal_weight();
+  runtime_policy_filters_root_and_emulator_signals();
   detects_root_paths();
   detects_root_properties();
   detects_root_mounts();
