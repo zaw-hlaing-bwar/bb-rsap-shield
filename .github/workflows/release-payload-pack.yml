@@ -79,10 +79,37 @@ jobs:
             --public-key-hex "${public_key}" \
             --output "target/rasp-shield-payload-pack-${payload_version}.provenance.json" \
             --sha256-output "target/rasp-shield-payload-pack-${payload_version}.tar.gz.sha256"
+      - name: Verify release provenance
+        run: |
+          set -euo pipefail
+          payload_version="${PAYLOAD_VERSION_INPUT:-${GITHUB_REF_NAME}}"
+          payload_version="${payload_version#v}"
+          public_key="$(awk '/payload_signing_public_key_hex:/ {print $2}' target/payload-pack-build.log)"
+          test -n "${public_key}"
+          cargo run -q -p rasp-cli -- verify-release-provenance \
+            --provenance "target/rasp-shield-payload-pack-${payload_version}.provenance.json" \
+            --archive "target/rasp-shield-payload-pack-${payload_version}.tar.gz" \
+            --payload-pack target/payload-pack/android-release \
+            --payload-signing-public-key-hex "${public_key}" \
+            --expected-repository "${GITHUB_REPOSITORY}" \
+            --expected-commit-sha "${GITHUB_SHA}" \
+            --expected-git-ref "${GITHUB_REF}" \
+            --expected-workflow-run-id "${GITHUB_RUN_ID}" \
+            --expected-payload-version "${payload_version}" | tee target/payload-release-provenance-verify.log
       - name: Attest payload archive
         uses: actions/attest@v4
         with:
           subject-path: target/rasp-shield-payload-pack-*.tar.gz
+      - name: Verify payload archive attestation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh attestation verify target/rasp-shield-payload-pack-*.tar.gz \
+            --repo "${GITHUB_REPOSITORY}" \
+            --cert-oidc-issuer "https://token.actions.githubusercontent.com" \
+            --deny-self-hosted-runners \
+            --format json | tee target/payload-archive-attestation-verify.json
       - uses: actions/upload-artifact@v4
         with:
           name: rasp-shield-payload-pack-${{ github.run_id }}
@@ -96,3 +123,5 @@ jobs:
             target/payload-pack/android-release/licenses/NOTICE.txt
             target/payload-pack-build.log
             target/payload-pack-verify.log
+            target/payload-release-provenance-verify.log
+            target/payload-archive-attestation-verify.json

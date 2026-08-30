@@ -565,6 +565,7 @@ fn verify(args: VerifyArgs) -> RaspResult<ExitCode> {
     };
 
     if let Some(manifest) = integrity_manifest.as_ref() {
+        verify_integrity_manifest_metadata(manifest, &mut checks, &mut failures);
         verify_application_metadata(manifest, &inspection, &mut checks, &mut failures);
         verify_provider(manifest, &inspection, &mut checks, &mut failures);
         verify_protected_assets(
@@ -1407,6 +1408,204 @@ fn read_integrity_manifest(path: &Path) -> Result<IntegrityManifest, String> {
     })
 }
 
+fn verify_integrity_manifest_metadata(
+    manifest: &IntegrityManifest,
+    checks: &mut BTreeMap<String, String>,
+    failures: &mut Vec<String>,
+) {
+    let mut metadata_failures = Vec::new();
+    if manifest.schema_version != 1 {
+        metadata_failures.push(format!(
+            "schema_version expected 1, got {}",
+            manifest.schema_version
+        ));
+    }
+    if manifest.manifest_type != "RASP_SHIELD_ANDROID_INTEGRITY" {
+        metadata_failures.push(format!(
+            "manifest_type expected RASP_SHIELD_ANDROID_INTEGRITY, got {}",
+            manifest.manifest_type
+        ));
+    }
+    if !is_hex_sha256(&manifest.build_id) {
+        metadata_failures.push("build_id must be a 64-character SHA-256 digest".to_string());
+    }
+    validate_non_empty_manifest_field(
+        "package_name",
+        &manifest.package_name,
+        &mut metadata_failures,
+    );
+    validate_non_empty_manifest_field(
+        "application.profile",
+        &manifest.application.profile,
+        &mut metadata_failures,
+    );
+    validate_non_empty_manifest_field(
+        "application.build_environment",
+        &manifest.application.build_environment,
+        &mut metadata_failures,
+    );
+    validate_non_empty_manifest_field(
+        "application.expected_package_name",
+        &manifest.application.expected_package_name,
+        &mut metadata_failures,
+    );
+    if !is_hex_sha256(&manifest.policy.digest_sha256) {
+        metadata_failures
+            .push("policy.digest_sha256 must be a 64-character SHA-256 digest".to_string());
+    }
+    validate_integrity_runtime_policy_metadata(&manifest.policy.runtime, &mut metadata_failures);
+    if manifest.android.expected_certificate_sha256.is_empty() {
+        metadata_failures.push(
+            "android.expected_certificate_sha256 must include at least one digest".to_string(),
+        );
+    }
+    for digest in &manifest.android.expected_certificate_sha256 {
+        if !is_hex_sha256(digest) {
+            metadata_failures.push(format!(
+                "android.expected_certificate_sha256 contains invalid digest {digest}"
+            ));
+        }
+    }
+    validate_non_empty_manifest_field(
+        "provider.name",
+        &manifest.provider.name,
+        &mut metadata_failures,
+    );
+    validate_non_empty_manifest_field(
+        "provider.authorities",
+        &manifest.provider.authorities,
+        &mut metadata_failures,
+    );
+    if manifest.provider.exported {
+        metadata_failures.push("provider.exported must be false".to_string());
+    }
+    validate_non_empty_manifest_field(
+        "payload.version",
+        &manifest.payload.version,
+        &mut metadata_failures,
+    );
+    if manifest.payload.files.is_empty() {
+        metadata_failures.push("payload.files must include at least one digest".to_string());
+    }
+    for (path, digest) in &manifest.payload.files {
+        if !is_safe_manifest_relative_path(path) {
+            metadata_failures.push(format!("payload.files contains unsafe path {path}"));
+        }
+        if !is_hex_sha256(digest) {
+            metadata_failures.push(format!("payload.files[{path}] must be a SHA-256 digest"));
+        }
+    }
+    if manifest.protected_assets.is_empty() {
+        metadata_failures.push("protected_assets must include at least one entry".to_string());
+    }
+    let mut protected_paths = BTreeSet::new();
+    let mut bootstrap_count = 0usize;
+    for asset in &manifest.protected_assets {
+        if !is_safe_manifest_relative_path(&asset.path) {
+            metadata_failures.push(format!(
+                "protected_assets contains unsafe path {}",
+                asset.path
+            ));
+        }
+        if !is_hex_sha256(&asset.sha256) {
+            metadata_failures.push(format!(
+                "protected_assets[{}].sha256 must be a SHA-256 digest",
+                asset.path
+            ));
+        }
+        if !protected_paths.insert(asset.path.clone()) {
+            metadata_failures.push(format!(
+                "protected_assets contains duplicate path {}",
+                asset.path
+            ));
+        }
+        if asset.kind == IntegrityProtectedAssetKind::BootstrapDex {
+            bootstrap_count += 1;
+        }
+    }
+    if bootstrap_count != 1 {
+        metadata_failures.push(format!(
+            "protected_assets must include exactly one BOOTSTRAP_DEX entry, got {bootstrap_count}"
+        ));
+    }
+    validate_apk_inventory_metadata(&manifest.apk_inventory, &mut metadata_failures);
+
+    record_check(
+        checks,
+        failures,
+        "integrity_manifest_metadata",
+        metadata_failures.is_empty(),
+        if metadata_failures.is_empty() {
+            "integrity manifest metadata is internally consistent".to_string()
+        } else {
+            metadata_failures.join("; ")
+        },
+    );
+}
+
+fn validate_non_empty_manifest_field(name: &str, value: &str, failures: &mut Vec<String>) {
+    if value.trim().is_empty() {
+        failures.push(format!("{name} must not be empty"));
+    }
+}
+
+fn validate_integrity_runtime_policy_metadata(
+    policy: &IntegrityRuntimePolicy,
+    failures: &mut Vec<String>,
+) {
+    let thresholds = &policy.thresholds;
+    if !(thresholds.report < thresholds.warn
+        && thresholds.warn < thresholds.restrict
+        && thresholds.restrict <= thresholds.terminate)
+    {
+        failures.push(
+            "policy.runtime.thresholds must be ordered: report < warn < restrict <= terminate"
+                .to_string(),
+        );
+    }
+    if policy.startup_budget_ms == 0 {
+        failures.push("policy.runtime.startup_budget_ms must be greater than zero".to_string());
+    }
+    if policy.monitoring.scan_interval_minimum_ms == 0
+        || policy.monitoring.scan_interval_minimum_ms > policy.monitoring.scan_interval_maximum_ms
+    {
+        failures.push(
+            "policy.runtime.monitoring interval must be greater than zero and minimum <= maximum"
+                .to_string(),
+        );
+    }
+}
+
+fn validate_apk_inventory_metadata(inventory: &IntegrityApkInventory, failures: &mut Vec<String>) {
+    let undeclared = inventory.entry_count == 0
+        && inventory.entry_set_sha256.is_empty()
+        && inventory.executable_entry_count == 0
+        && inventory.executable_entry_set_sha256.is_empty();
+    if undeclared {
+        return;
+    }
+    if inventory.entry_count == 0 {
+        failures.push("apk_inventory.entry_count must be greater than zero".to_string());
+    }
+    if !is_hex_sha256(&inventory.entry_set_sha256) {
+        failures.push("apk_inventory.entry_set_sha256 must be a SHA-256 digest".to_string());
+    }
+    if !is_hex_sha256(&inventory.executable_entry_set_sha256) {
+        failures
+            .push("apk_inventory.executable_entry_set_sha256 must be a SHA-256 digest".to_string());
+    }
+}
+
+fn is_safe_manifest_relative_path(path: &str) -> bool {
+    !path.is_empty()
+        && !path.starts_with('/')
+        && !path.starts_with('\\')
+        && !path.contains('\\')
+        && path
+            .split('/')
+            .all(|segment| !matches!(segment, "" | "." | ".."))
+}
+
 fn verify_application_metadata(
     manifest: &IntegrityManifest,
     inspection: &InspectionResult,
@@ -1505,17 +1704,13 @@ fn verify_protected_assets(
                         asset.path
                     ));
                 }
-                if !manifest
-                    .payload
-                    .files
-                    .values()
-                    .any(|digest| digest.eq_ignore_ascii_case(&asset.sha256))
-                {
-                    payload_digest_failures.push(format!(
-                        "{} digest is not declared in payload.files",
-                        asset.path
-                    ));
-                }
+                verify_payload_digest_binding(
+                    manifest,
+                    "bootstrap.dex",
+                    &asset.path,
+                    &asset.sha256,
+                    &mut payload_digest_failures,
+                );
             }
             IntegrityProtectedAssetKind::NativeLibrary => {
                 native_count += 1;
@@ -1529,14 +1724,17 @@ fn verify_protected_assets(
                         asset.path
                     ));
                 }
-                if !manifest
-                    .payload
-                    .files
-                    .values()
-                    .any(|digest| digest.eq_ignore_ascii_case(&asset.sha256))
-                {
+                if let Some(payload_path) = native_payload_path_for_apk_entry(&asset.path) {
+                    verify_payload_digest_binding(
+                        manifest,
+                        &payload_path,
+                        &asset.path,
+                        &asset.sha256,
+                        &mut payload_digest_failures,
+                    );
+                } else {
                     payload_digest_failures.push(format!(
-                        "{} digest is not declared in payload.files",
+                        "{} is not a valid inserted native payload path",
                         asset.path
                     ));
                 }
@@ -1624,6 +1822,34 @@ fn verify_protected_assets(
                 flutter_failures.join("; ")
             },
         );
+    }
+}
+
+fn verify_payload_digest_binding(
+    manifest: &IntegrityManifest,
+    payload_path: &str,
+    apk_path: &str,
+    asset_sha256: &str,
+    failures: &mut Vec<String>,
+) {
+    match manifest.payload.files.get(payload_path) {
+        Some(expected_digest) if expected_digest.eq_ignore_ascii_case(asset_sha256) => {}
+        Some(expected_digest) => failures.push(format!(
+            "payload.files[{payload_path}] for {apk_path} expected {asset_sha256}, got {expected_digest}"
+        )),
+        None => failures.push(format!(
+            "{apk_path} digest is missing from payload.files[{payload_path}]"
+        )),
+    }
+}
+
+fn native_payload_path_for_apk_entry(apk_path: &str) -> Option<String> {
+    let mut parts = apk_path.split('/');
+    match (parts.next(), parts.next(), parts.next(), parts.next()) {
+        (Some("lib"), Some(abi), Some("libsecurity.so"), None) => {
+            Some(format!("{abi}/libsecurity.so"))
+        }
+        _ => None,
     }
 }
 
@@ -2791,19 +3017,26 @@ mod tests {
     use super::{
         default_payload_maximum_cli_version, default_signed_apk_path, integrity_runtime_policy,
         is_hex_sha256, parse_native_library_args, protected_asset_paths,
-        selected_payload_abi_libraries, sha256_file, sibling_json_path,
-        validate_shield_compatibility, verify_release_provenance_command,
-        VerifyReleaseProvenanceArgs,
+        selected_payload_abi_libraries, sha256_bytes, sha256_file, sibling_json_path,
+        validate_shield_compatibility, verify_integrity_manifest_metadata, verify_protected_assets,
+        verify_release_provenance_command, VerifyReleaseProvenanceArgs,
     };
-    use android_apk::IntegrityProtectedAssetKind;
-    use artifact_inspector::{FlutterInfo, InspectionResult};
+    use android_apk::{
+        default_runtime_policy, IntegrityAndroid, IntegrityApkInventory, IntegrityApplication,
+        IntegrityManifest, IntegrityPayload, IntegrityPolicy, IntegrityProtectedAsset,
+        IntegrityProtectedAssetKind, IntegrityProvider, IntegrityTool,
+    };
+    use artifact_inspector::{DexFile, FlutterInfo, InspectionResult, NativeLibrary};
     use payload_pack::{build_payload_pack, PayloadPackBuildOptions, PayloadSigningKey};
     use rasp_config::parse_config;
     use rasp_core::ExitCode;
     use std::collections::BTreeMap;
-    use std::fs;
+    use std::fs::{self, File};
+    use std::io::Write;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
+    use zip::write::SimpleFileOptions;
+    use zip::{CompressionMethod, ZipWriter};
 
     #[test]
     fn derives_default_external_artifact_paths() {
@@ -3003,6 +3236,126 @@ mod tests {
     }
 
     #[test]
+    fn verifies_integrity_manifest_metadata_shape() {
+        let mut checks = BTreeMap::new();
+        let mut failures = Vec::new();
+        let manifest = test_integrity_manifest(
+            vec![
+                test_protected_asset(
+                    "classes2.dex",
+                    "1".repeat(64),
+                    IntegrityProtectedAssetKind::BootstrapDex,
+                ),
+                test_protected_asset(
+                    "lib/arm64-v8a/libsecurity.so",
+                    "2".repeat(64),
+                    IntegrityProtectedAssetKind::NativeLibrary,
+                ),
+            ],
+            BTreeMap::from([
+                ("bootstrap.dex".to_string(), "1".repeat(64)),
+                ("arm64-v8a/libsecurity.so".to_string(), "2".repeat(64)),
+            ]),
+        );
+
+        verify_integrity_manifest_metadata(&manifest, &mut checks, &mut failures);
+
+        assert!(failures.is_empty(), "{failures:?}");
+        assert!(checks["integrity_manifest_metadata"].starts_with("PASS"));
+    }
+
+    #[test]
+    fn rejects_integrity_manifest_metadata_with_unsafe_paths_and_duplicates() {
+        let mut checks = BTreeMap::new();
+        let mut failures = Vec::new();
+        let mut manifest = test_integrity_manifest(
+            vec![
+                test_protected_asset(
+                    "classes2.dex",
+                    "1".repeat(64),
+                    IntegrityProtectedAssetKind::BootstrapDex,
+                ),
+                test_protected_asset(
+                    "classes2.dex",
+                    "2".repeat(64),
+                    IntegrityProtectedAssetKind::NativeLibrary,
+                ),
+                test_protected_asset(
+                    "../classes3.dex",
+                    "not-a-digest".to_string(),
+                    IntegrityProtectedAssetKind::JavascriptBundle,
+                ),
+            ],
+            BTreeMap::from([
+                ("bootstrap.dex".to_string(), "1".repeat(64)),
+                ("../payload.dex".to_string(), "not-a-digest".to_string()),
+            ]),
+        );
+        manifest.schema_version = 2;
+        manifest.build_id = "not-a-digest".to_string();
+        manifest.policy.digest_sha256 = "not-a-digest".to_string();
+        manifest.policy.runtime.thresholds.warn = 10;
+        manifest.policy.runtime.monitoring.scan_interval_minimum_ms = 20_000;
+        manifest.policy.runtime.monitoring.scan_interval_maximum_ms = 5_000;
+
+        verify_integrity_manifest_metadata(&manifest, &mut checks, &mut failures);
+
+        assert!(!failures.is_empty());
+        let failure = failures.join("; ");
+        assert!(failure.contains("schema_version"));
+        assert!(failure.contains("build_id"));
+        assert!(failure.contains("payload.files contains unsafe path ../payload.dex"));
+        assert!(failure.contains("protected_assets contains duplicate path classes2.dex"));
+        assert!(failure.contains("protected_assets contains unsafe path ../classes3.dex"));
+        assert!(checks["integrity_manifest_metadata"].starts_with("FAIL"));
+    }
+
+    #[test]
+    fn verify_protected_assets_requires_exact_payload_file_paths() {
+        let root = create_temp_dir("verify-protected-assets-binding");
+        let apk = root.join("shielded.apk");
+        let bootstrap = b"dex\n035\0payload";
+        let native = b"\x7fELFpayload";
+        create_zip_with_entries(
+            &apk,
+            &[
+                ("classes2.dex", bootstrap.to_vec()),
+                ("lib/arm64-v8a/libsecurity.so", native.to_vec()),
+            ],
+        );
+
+        let manifest = test_integrity_manifest(
+            vec![
+                test_protected_asset(
+                    "classes2.dex",
+                    sha256_bytes(bootstrap),
+                    IntegrityProtectedAssetKind::BootstrapDex,
+                ),
+                test_protected_asset(
+                    "lib/arm64-v8a/libsecurity.so",
+                    sha256_bytes(native),
+                    IntegrityProtectedAssetKind::NativeLibrary,
+                ),
+            ],
+            BTreeMap::from([
+                ("other-bootstrap.dex".to_string(), sha256_bytes(bootstrap)),
+                ("arm64-v8a/other.so".to_string(), sha256_bytes(native)),
+            ]),
+        );
+        let inspection = test_inspection_for_payload(bootstrap.len() as u64, native.len() as u64);
+        let mut checks = BTreeMap::new();
+        let mut failures = Vec::new();
+
+        verify_protected_assets(&manifest, &apk, &inspection, &mut checks, &mut failures);
+
+        assert!(!failures.is_empty());
+        let failure = failures.join("; ");
+        assert!(failure.contains("payload.files[bootstrap.dex]"));
+        assert!(failure.contains("payload.files[arm64-v8a/libsecurity.so]"));
+        assert!(checks["payload_digest_manifest"].starts_with("FAIL"));
+    }
+
+    #[test]
     fn verifies_release_provenance_for_signed_payload_pack() {
         let release = test_payload_release("verify-release-provenance");
 
@@ -3136,6 +3489,91 @@ mod tests {
             provenance,
             public_key_hex: signing_key.public_key_hex(),
         }
+    }
+
+    fn test_integrity_manifest(
+        protected_assets: Vec<IntegrityProtectedAsset>,
+        payload_files: BTreeMap<String, String>,
+    ) -> IntegrityManifest {
+        IntegrityManifest {
+            schema_version: 1,
+            manifest_type: "RASP_SHIELD_ANDROID_INTEGRITY".to_string(),
+            build_id: "a".repeat(64),
+            package_name: "com.example.mobile".to_string(),
+            application: IntegrityApplication {
+                profile: "test".to_string(),
+                build_environment: "test".to_string(),
+                expected_package_name: "com.example.mobile".to_string(),
+            },
+            policy: IntegrityPolicy {
+                digest_sha256: "b".repeat(64),
+                runtime: default_runtime_policy(),
+            },
+            android: IntegrityAndroid {
+                expected_certificate_sha256: vec!["c".repeat(64)],
+            },
+            provider: IntegrityProvider {
+                name: "com.rasp.runtime.bootstrap.RaspInitProvider".to_string(),
+                authorities: "com.example.mobile.rasp.a91f30c2".to_string(),
+                exported: false,
+                init_order: Some(1000),
+            },
+            payload: IntegrityPayload {
+                version: "test-payload".to_string(),
+                files: payload_files,
+            },
+            protected_assets,
+            apk_inventory: IntegrityApkInventory {
+                entry_count: 2,
+                entry_set_sha256: "d".repeat(64),
+                executable_entry_count: 2,
+                executable_entry_set_sha256: "e".repeat(64),
+            },
+            generated_by: IntegrityTool {
+                name: "rasp-cli-test".to_string(),
+                version: env!("CARGO_PKG_VERSION").to_string(),
+            },
+        }
+    }
+
+    fn test_protected_asset(
+        path: &str,
+        sha256: String,
+        kind: IntegrityProtectedAssetKind,
+    ) -> IntegrityProtectedAsset {
+        IntegrityProtectedAsset {
+            path: path.to_string(),
+            sha256,
+            kind,
+        }
+    }
+
+    fn test_inspection_for_payload(bootstrap_size: u64, native_size: u64) -> InspectionResult {
+        let mut inspection = InspectionResult::unsupported(PathBuf::from("shielded.apk"));
+        inspection.dex_files = vec![DexFile {
+            path: "classes2.dex".to_string(),
+            size_bytes: bootstrap_size,
+            compressed: true,
+        }];
+        inspection.native_libraries = vec![NativeLibrary {
+            path: "lib/arm64-v8a/libsecurity.so".to_string(),
+            abi: "arm64-v8a".to_string(),
+            name: "libsecurity.so".to_string(),
+            size_bytes: native_size,
+            compressed: false,
+        }];
+        inspection
+    }
+
+    fn create_zip_with_entries(path: &Path, entries: &[(&str, Vec<u8>)]) {
+        let file = File::create(path).expect("create ZIP");
+        let mut writer = ZipWriter::new(file);
+        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+        for (name, bytes) in entries {
+            writer.start_file(name, options).expect("start ZIP entry");
+            writer.write_all(bytes).expect("write ZIP entry");
+        }
+        writer.finish().expect("finish ZIP");
     }
 
     fn create_temp_dir(prefix: &str) -> PathBuf {

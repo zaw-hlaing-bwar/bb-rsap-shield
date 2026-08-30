@@ -189,6 +189,179 @@ fn generated_apk_can_be_rewritten_with_payload() {
 }
 
 #[test]
+fn generated_react_native_matrix_can_be_rewritten_without_device() {
+    let root = create_temp_dir("react-native-rewrite-matrix");
+    let bootstrap_dex = root.join("bootstrap.dex");
+    let native_library = root.join("libsecurity.so");
+    fs::write(&bootstrap_dex, b"dex\n035\0payload").expect("write bootstrap");
+    fs::write(&native_library, elf_bytes("security")).expect("write native library");
+
+    let payload = PayloadFiles {
+        bootstrap_dex_path: bootstrap_dex,
+        abi_libraries: BTreeMap::from([("arm64-v8a".to_string(), native_library)]),
+    };
+    let mut options = rewrite_options();
+    options.integrity_manifest.protected_asset_paths = BTreeMap::from([(
+        "assets/index.android.bundle".to_string(),
+        IntegrityProtectedAssetKind::JavascriptBundle,
+    )]);
+
+    let variants = [
+        ReactNativeRewriteVariant {
+            name: "hermes-multidex-extract-false",
+            engine_library_path: "lib/arm64-v8a/libhermes.so",
+            engine_label: "hermes",
+            expected_engine: ReactNativeEngine::Hermes,
+            dex_entries: &["classes.dex", "classes2.dex", "classes10.dex"],
+            extract_native_libs: Some(false),
+            expected_inserted_dex: "classes11.dex",
+        },
+        ReactNativeRewriteVariant {
+            name: "jsc-single-dex",
+            engine_library_path: "lib/arm64-v8a/libjsc.so",
+            engine_label: "jsc",
+            expected_engine: ReactNativeEngine::JavaScriptCore,
+            dex_entries: &["classes.dex"],
+            extract_native_libs: None,
+            expected_inserted_dex: "classes2.dex",
+        },
+    ];
+
+    for variant in variants {
+        let input = root.join(format!("{}.apk", variant.name));
+        let output = root.join(format!("{}-shielded.apk", variant.name));
+        let manifest = minimal_manifest_with_extract_native_libs(
+            "com.example.mobile",
+            variant.extract_native_libs,
+        );
+        let mut entries = vec![
+            apk_entry("AndroidManifest.xml", manifest, CompressionMethod::Deflated),
+            apk_entry(
+                "assets/index.android.bundle",
+                format!("{} bundle", variant.name).into_bytes(),
+                CompressionMethod::Stored,
+            ),
+            apk_entry(
+                variant.engine_library_path,
+                elf_bytes(variant.engine_label),
+                CompressionMethod::Stored,
+            ),
+            apk_entry(
+                "resources.arsc",
+                b"resource table".to_vec(),
+                CompressionMethod::Stored,
+            ),
+            apk_entry(
+                "res/raw/preserved.bin",
+                b"preserved resource".to_vec(),
+                CompressionMethod::Deflated,
+            ),
+            apk_entry(
+                "assets/opaque/unknown-entry.bin",
+                b"unknown entry".to_vec(),
+                CompressionMethod::Stored,
+            ),
+            apk_entry(
+                "META-INF/MANIFEST.MF",
+                b"manifest signature".to_vec(),
+                CompressionMethod::Deflated,
+            ),
+            apk_entry(
+                "META-INF/CERT.RSA",
+                b"rsa signature".to_vec(),
+                CompressionMethod::Deflated,
+            ),
+        ];
+        for dex_entry in variant.dex_entries {
+            entries.push(apk_entry(
+                dex_entry,
+                format!("dex\n035\0{}", dex_entry).into_bytes(),
+                CompressionMethod::Deflated,
+            ));
+        }
+        create_apk_with_entry_specs(&input, &entries);
+
+        let report = rewrite_unsigned_apk_with_payload(&input, &output, &payload, &options)
+            .expect("rewrite React Native variant");
+        assert_eq!(report.inserted_dex_entry, variant.expected_inserted_dex);
+        assert_eq!(
+            report.inserted_native_library_entries,
+            vec!["lib/arm64-v8a/libsecurity.so"]
+        );
+
+        let rewritten = inspect_apk(&output).expect("inspect rewritten React Native APK");
+        assert_eq!(rewritten.react_native_engine, Some(variant.expected_engine));
+        assert_eq!(rewritten.extract_native_libs, variant.extract_native_libs);
+        assert!(rewritten
+            .dex_files
+            .iter()
+            .any(|dex| dex.path == variant.expected_inserted_dex));
+        assert!(rewritten.signature_entries.is_empty());
+
+        let mut archive = ZipArchive::new(File::open(&output).expect("open output APK"))
+            .expect("read output APK");
+        assert_eq!(
+            read_zip_entry(&mut archive, "assets/opaque/unknown-entry.bin"),
+            b"unknown entry"
+        );
+        assert_eq!(
+            read_zip_entry(&mut archive, "res/raw/preserved.bin"),
+            b"preserved resource"
+        );
+        assert_eq!(
+            zip_entry_compression(&mut archive, "assets/index.android.bundle"),
+            CompressionMethod::Stored
+        );
+        assert_eq!(
+            zip_entry_compression(&mut archive, "resources.arsc"),
+            CompressionMethod::Stored
+        );
+        assert_eq!(
+            zip_entry_compression(&mut archive, "assets/opaque/unknown-entry.bin"),
+            CompressionMethod::Stored
+        );
+        assert_eq!(
+            zip_entry_compression(&mut archive, "res/raw/preserved.bin"),
+            CompressionMethod::Deflated
+        );
+        assert_eq!(
+            zip_entry_compression(&mut archive, "lib/arm64-v8a/libsecurity.so"),
+            CompressionMethod::Stored
+        );
+        assert_eq!(
+            zip_entry_compression(&mut archive, variant.expected_inserted_dex),
+            CompressionMethod::Deflated
+        );
+        assert!(archive.by_name("META-INF/MANIFEST.MF").is_err());
+        assert!(archive.by_name("META-INF/CERT.RSA").is_err());
+
+        let manifest = parse_manifest(&read_zip_entry(&mut archive, "AndroidManifest.xml"))
+            .expect("parse rewritten manifest");
+        assert_eq!(manifest.extract_native_libs, variant.extract_native_libs);
+        assert!(manifest.providers.iter().any(|provider| {
+            provider.name.as_deref() == Some("com.rasp.runtime.bootstrap.RaspInitProvider")
+                && provider.exported == Some(false)
+        }));
+
+        let integrity_manifest: IntegrityManifest =
+            serde_json::from_slice(&read_zip_entry(&mut archive, INTEGRITY_MANIFEST_ENTRY))
+                .expect("parse integrity manifest");
+        assert!(integrity_manifest.protected_assets.iter().any(|asset| {
+            asset.path == "assets/index.android.bundle"
+                && asset.kind == IntegrityProtectedAssetKind::JavascriptBundle
+        }));
+        assert_eq!(integrity_manifest.apk_inventory.entry_set_sha256.len(), 64);
+        assert_eq!(
+            integrity_manifest
+                .apk_inventory
+                .executable_entry_set_sha256
+                .len(),
+            64
+        );
+    }
+}
+
+#[test]
 fn generated_malformed_apks_fail_closed() {
     let root = create_temp_dir("malformed");
     let missing_manifest = root.join("missing-manifest.apk");
@@ -218,6 +391,16 @@ fn generated_malformed_apks_fail_closed() {
         .expect_err("ZIP-slip APK should fail inspection")
         .to_string();
     assert!(zip_slip_error.contains("ZIP-slip paths found"));
+}
+
+struct ReactNativeRewriteVariant<'a> {
+    name: &'a str,
+    engine_library_path: &'a str,
+    engine_label: &'a str,
+    expected_engine: ReactNativeEngine,
+    dex_entries: &'a [&'a str],
+    extract_native_libs: Option<bool>,
+    expected_inserted_dex: &'a str,
 }
 
 fn rewrite_options() -> ApkRewriteOptions {
@@ -269,12 +452,34 @@ fn create_temp_dir(name: &str) -> PathBuf {
 }
 
 fn create_apk_with_entries(path: &Path, entries: &[(&str, Vec<u8>)]) {
+    let entries = entries
+        .iter()
+        .map(|(name, bytes)| apk_entry(name, bytes.clone(), CompressionMethod::Deflated))
+        .collect::<Vec<_>>();
+    create_apk_with_entry_specs(path, &entries);
+}
+
+struct ApkEntrySpec<'a> {
+    name: &'a str,
+    bytes: Vec<u8>,
+    compression: CompressionMethod,
+}
+
+fn apk_entry(name: &str, bytes: Vec<u8>, compression: CompressionMethod) -> ApkEntrySpec<'_> {
+    ApkEntrySpec {
+        name,
+        bytes,
+        compression,
+    }
+}
+
+fn create_apk_with_entry_specs(path: &Path, entries: &[ApkEntrySpec<'_>]) {
     let file = File::create(path).expect("create APK");
     let mut writer = ZipWriter::new(file);
-    let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
-    for (name, bytes) in entries {
-        writer.start_file(name, options).expect("start entry");
-        writer.write_all(bytes).expect("write entry");
+    for entry in entries {
+        let options = SimpleFileOptions::default().compression_method(entry.compression);
+        writer.start_file(entry.name, options).expect("start entry");
+        writer.write_all(&entry.bytes).expect("write entry");
     }
     writer.finish().expect("finish APK");
 }
@@ -286,6 +491,10 @@ fn read_zip_entry(archive: &mut ZipArchive<File>, name: &str) -> Vec<u8> {
     bytes
 }
 
+fn zip_entry_compression(archive: &mut ZipArchive<File>, name: &str) -> CompressionMethod {
+    archive.by_name(name).expect("entry exists").compression()
+}
+
 fn elf_bytes(label: &str) -> Vec<u8> {
     let mut bytes = b"\x7fELF".to_vec();
     bytes.extend_from_slice(label.as_bytes());
@@ -293,6 +502,13 @@ fn elf_bytes(label: &str) -> Vec<u8> {
 }
 
 fn minimal_manifest(package_name: &str) -> Vec<u8> {
+    minimal_manifest_with_extract_native_libs(package_name, None)
+}
+
+fn minimal_manifest_with_extract_native_libs(
+    package_name: &str,
+    extract_native_libs: Option<bool>,
+) -> Vec<u8> {
     const RES_XML_TYPE: u16 = 0x0003;
     const RES_STRING_POOL_TYPE: u16 = 0x0001;
     const RES_XML_START_ELEMENT_TYPE: u16 = 0x0102;
@@ -300,13 +516,28 @@ fn minimal_manifest(package_name: &str) -> Vec<u8> {
     const UTF8_FLAG: u32 = 0x0000_0100;
     const NO_INDEX: u32 = 0xffff_ffff;
     const TYPE_STRING: u8 = 0x03;
+    const TYPE_INT_BOOLEAN: u8 = 0x12;
 
-    let strings = vec!["manifest", "application", "package", package_name];
+    let mut strings = vec!["manifest", "application", "package", package_name];
+    if extract_native_libs.is_some() {
+        strings.push("extractNativeLibs");
+    }
     let string_pool = build_string_pool(&strings, RES_STRING_POOL_TYPE, UTF8_FLAG);
     let manifest_index = string_index(&strings, "manifest");
     let application_index = string_index(&strings, "application");
     let package_index = string_index(&strings, "package");
     let package_value_index = string_index(&strings, package_name);
+    let application_attributes = extract_native_libs
+        .map(|enabled| {
+            vec![(
+                NO_INDEX,
+                string_index(&strings, "extractNativeLibs"),
+                NO_INDEX,
+                TYPE_INT_BOOLEAN,
+                if enabled { u32::MAX } else { 0 },
+            )]
+        })
+        .unwrap_or_default();
 
     let mut body = Vec::new();
     body.extend_from_slice(&string_pool);
@@ -326,7 +557,7 @@ fn minimal_manifest(package_name: &str) -> Vec<u8> {
         RES_XML_START_ELEMENT_TYPE,
         NO_INDEX,
         application_index,
-        &[],
+        &application_attributes,
     ));
     body.extend_from_slice(&end_element(
         RES_XML_END_ELEMENT_TYPE,

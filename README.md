@@ -328,10 +328,10 @@ Usage: rasp-cli verify [OPTIONS] --input <INPUT>
 | `--expected-cert-sha256 <EXPECTED_CERT_SHA256>` | No | | 64-character signing certificate SHA-256 digest to require in the APK. If omitted, the signing certificate check is skipped with a warning. |
 
 Verification checks include APK inspection, ZIP safety, internal integrity
-manifest presence, package metadata, private bootstrap provider, protected asset
-digests, bootstrap DEX, native payload libraries, payload digest manifest, APK
-inventory, optional Flutter protected assets, and optional signing certificate
-matching.
+manifest presence and metadata consistency, package metadata, private bootstrap
+provider, protected asset digests, bootstrap DEX, native payload libraries,
+exact payload digest manifest bindings, APK inventory, optional Flutter
+protected assets, and optional signing certificate matching.
 
 ### `rasp-cli runtime-smoke`
 

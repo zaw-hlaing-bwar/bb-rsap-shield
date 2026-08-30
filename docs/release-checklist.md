@@ -13,6 +13,8 @@
 - `rasp-cli verify-release-provenance` passes for the archive, provenance JSON,
   payload-pack directory, public key, and expected release metadata.
 - Payload-pack archive has a GitHub artifact attestation tied to the release workflow run.
+- Payload-pack archive attestation verifies with `gh attestation verify` before
+  release artifacts are uploaded.
 - Transform React Native Hermes APK.
 - Transform React Native JSC APK.
 - Transform multidex APK.
@@ -25,6 +27,7 @@
 - Payload loads before `Application.onCreate()`.
 - Package name verification passes.
 - Final signing certificate verification passes.
+- Integrity manifest metadata and exact payload-file digest bindings verify.
 - JavaScript bundle modification is detected.
 - Payload policy modification is detected.
 - Debugger attachment produces a signal.
