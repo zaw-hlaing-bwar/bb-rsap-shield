@@ -21,7 +21,9 @@
     "flutter",
     "react_native_engine",
     "javascript_bundle_path",
+    "javascript_bundle_format",
     "application_class",
+    "debuggable",
     "extract_native_libs",
     "main_activity",
     "content_providers",
@@ -30,6 +32,8 @@
     "signature_entries",
     "apk_compression",
     "existing_security_products",
+    "exposed_rasp_markers",
+    "debug_metadata_entries",
     "compatibility_warnings",
     "warnings"
   ],
@@ -70,7 +74,12 @@
       "enum": ["HERMES", "JAVA_SCRIPT_CORE", "UNKNOWN_REACT_NATIVE", null]
     },
     "javascript_bundle_path": { "type": ["string", "null"] },
+    "javascript_bundle_format": {
+      "type": ["string", "null"],
+      "enum": ["PLAIN_TEXT", "HERMES_BYTECODE", "UNKNOWN", null]
+    },
     "application_class": { "type": ["string", "null"] },
+    "debuggable": { "type": ["boolean", "null"] },
     "extract_native_libs": { "type": ["boolean", "null"] },
     "main_activity": { "type": ["string", "null"] },
     "content_providers": {
@@ -91,6 +100,14 @@
     },
     "apk_compression": { "$ref": "#/$defs/apk_compression" },
     "existing_security_products": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "exposed_rasp_markers": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "debug_metadata_entries": {
       "type": "array",
       "items": { "type": "string" }
     },

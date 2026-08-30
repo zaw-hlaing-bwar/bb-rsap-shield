@@ -15,7 +15,9 @@ use android_signing::{
     align_apk, sign_apk, verify_alignment, verify_apk_signature, AndroidSigningTools,
     ApkSignOptions, SigningToolError,
 };
-use artifact_inspector::{inspect_apk, ApkSignatureScheme, InspectionResult};
+use artifact_inspector::{
+    inspect_apk, ApkSignatureScheme, InspectionResult, JavascriptBundleFormat, ReactNativeEngine,
+};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use payload_pack::{
     build_payload_pack, load_payload_pack_verified, PayloadPack, PayloadPackBuildOptions,
@@ -540,6 +542,7 @@ fn verify(args: VerifyArgs) -> RaspResult<ExitCode> {
             && inspection.apk_compression.zip_slip_paths.is_empty(),
         "ZIP contains no duplicate or unsafe paths",
     );
+    record_anti_reverse_posture_checks(&inspection, &mut checks, &mut warnings);
 
     let integrity_manifest = match read_integrity_manifest(&args.input) {
         Ok(manifest) => {
@@ -1401,6 +1404,110 @@ fn record_check(
     }
 }
 
+fn record_warning_check(
+    checks: &mut BTreeMap<String, String>,
+    warnings: &mut Vec<String>,
+    name: &str,
+    messages: Vec<String>,
+    pass_message: &str,
+) {
+    if messages.is_empty() {
+        checks.insert(name.to_string(), format!("PASS: {pass_message}"));
+    } else {
+        let message = messages.join("; ");
+        checks.insert(name.to_string(), format!("WARN: {message}"));
+        warnings.push(format!("{name}: {message}"));
+    }
+}
+
+fn record_anti_reverse_posture_checks(
+    inspection: &InspectionResult,
+    checks: &mut BTreeMap<String, String>,
+    warnings: &mut Vec<String>,
+) {
+    record_warning_check(
+        checks,
+        warnings,
+        "anti_reverse_posture",
+        anti_reverse_posture_warnings(inspection),
+        "APK does not expose debug posture signals checked by rasp-cli",
+    );
+    record_warning_check(
+        checks,
+        warnings,
+        "javascript_hardening",
+        javascript_hardening_warnings(inspection),
+        "JavaScript bundle posture does not expose plain React Native bytecode risk",
+    );
+    record_warning_check(
+        checks,
+        warnings,
+        "rasp_marker_exposure",
+        rasp_marker_exposure_warnings(inspection),
+        "No default RASP marker paths or provider names were detected",
+    );
+}
+
+fn anti_reverse_posture_warnings(inspection: &InspectionResult) -> Vec<String> {
+    let mut warnings = Vec::new();
+    if inspection.debuggable == Some(true) {
+        warnings.push("APK application is debuggable".to_string());
+    }
+    if !inspection.debug_metadata_entries.is_empty() {
+        warnings.push(format!(
+            "debug/source metadata entries are present: {}",
+            summarize_values(&inspection.debug_metadata_entries, 5)
+        ));
+    }
+    warnings
+}
+
+fn javascript_hardening_warnings(inspection: &InspectionResult) -> Vec<String> {
+    let mut warnings = Vec::new();
+    match inspection.react_native_engine {
+        Some(ReactNativeEngine::Hermes) => {}
+        Some(ReactNativeEngine::JavaScriptCore) => {
+            warnings.push(
+                "React Native app appears to use JavaScriptCore instead of Hermes".to_string(),
+            );
+        }
+        Some(ReactNativeEngine::UnknownReactNative) => {
+            warnings.push("React Native engine could not be confirmed as Hermes".to_string());
+        }
+        None => {}
+    }
+    if inspection.javascript_bundle_format == Some(JavascriptBundleFormat::PlainText) {
+        let path = inspection
+            .javascript_bundle_path
+            .as_deref()
+            .unwrap_or("unknown JavaScript bundle");
+        warnings.push(format!("plain-text JavaScript bundle detected at {path}"));
+    }
+    warnings
+}
+
+fn rasp_marker_exposure_warnings(inspection: &InspectionResult) -> Vec<String> {
+    if inspection.exposed_rasp_markers.is_empty() {
+        Vec::new()
+    } else {
+        vec![format!(
+            "default RASP markers are exposed: {}",
+            summarize_values(&inspection.exposed_rasp_markers, 5)
+        )]
+    }
+}
+
+fn summarize_values(values: &[String], maximum: usize) -> String {
+    if values.len() <= maximum {
+        return values.join(", ");
+    }
+    format!(
+        "{}, and {} more",
+        values[..maximum].join(", "),
+        values.len() - maximum
+    )
+}
+
 fn read_integrity_manifest(path: &Path) -> Result<IntegrityManifest, String> {
     let bytes = read_zip_entry(path, INTEGRITY_MANIFEST_ENTRY)?;
     serde_json::from_slice(&bytes).map_err(|error| {
@@ -2256,6 +2363,7 @@ fn validate_shield_compatibility(
             inspection.compatibility_warnings.join("; ")
         ));
     }
+    validate_hardening_requirements(config, inspection, &mut errors);
 
     let configured_abis = config
         .android
@@ -2295,6 +2403,64 @@ fn validate_shield_compatibility(
             ExitCode::CompatibilityValidationFailure,
             errors.join("; "),
         ))
+    }
+}
+
+fn validate_hardening_requirements(
+    config: &RaspConfig,
+    inspection: &InspectionResult,
+    errors: &mut Vec<String>,
+) {
+    if config.hardening.javascript.require_hermes {
+        match inspection.react_native_engine {
+            Some(ReactNativeEngine::Hermes) => {}
+            Some(ReactNativeEngine::JavaScriptCore) => errors.push(
+                "hardening.javascript.require_hermes is true but the APK appears to use JavaScriptCore"
+                    .to_string(),
+            ),
+            Some(ReactNativeEngine::UnknownReactNative) => errors.push(
+                "hardening.javascript.require_hermes is true but the React Native engine could not be confirmed as Hermes"
+                    .to_string(),
+            ),
+            None => {}
+        }
+    }
+
+    if config.hardening.javascript.fail_on_plaintext_bundle
+        && inspection.javascript_bundle_format == Some(JavascriptBundleFormat::PlainText)
+    {
+        let path = inspection
+            .javascript_bundle_path
+            .as_deref()
+            .unwrap_or("unknown JavaScript bundle");
+        errors.push(format!(
+            "hardening.javascript.fail_on_plaintext_bundle is true but plain-text JavaScript was detected at {path}"
+        ));
+    }
+
+    if config.hardening.anti_reverse.fail_on_debuggable && inspection.debuggable == Some(true) {
+        errors.push(
+            "hardening.anti_reverse.fail_on_debuggable is true but the APK application is debuggable"
+                .to_string(),
+        );
+    }
+
+    if config.hardening.anti_reverse.fail_on_debug_metadata
+        && !inspection.debug_metadata_entries.is_empty()
+    {
+        errors.push(format!(
+            "hardening.anti_reverse.fail_on_debug_metadata is true but debug/source metadata entries are present: {}",
+            summarize_values(&inspection.debug_metadata_entries, 5)
+        ));
+    }
+
+    if config.hardening.anti_reverse.fail_on_exposed_rasp_markers
+        && !inspection.exposed_rasp_markers.is_empty()
+    {
+        errors.push(format!(
+            "hardening.anti_reverse.fail_on_exposed_rasp_markers is true but default RASP markers are exposed: {}",
+            summarize_values(&inspection.exposed_rasp_markers, 5)
+        ));
     }
 }
 
@@ -2823,6 +2989,13 @@ fn print_inspection_text(result: &InspectionResult) {
             .as_deref()
             .unwrap_or("unknown")
     );
+    println!(
+        "JavaScript bundle format: {}",
+        result
+            .javascript_bundle_format
+            .map(|format| format!("{format:?}"))
+            .unwrap_or_else(|| "unknown".to_string())
+    );
     if let Some(flutter) = result.flutter.as_ref() {
         println!("Flutter: detected");
         println!("Flutter app libraries: {}", flutter.app_libraries.len());
@@ -2837,6 +3010,13 @@ fn print_inspection_text(result: &InspectionResult) {
     println!(
         "Application class: {}",
         result.application_class.as_deref().unwrap_or("unknown")
+    );
+    println!(
+        "Debuggable: {}",
+        result
+            .debuggable
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unknown".to_string())
     );
     println!(
         "Main activity: {}",
@@ -2887,6 +3067,18 @@ fn print_inspection_text(result: &InspectionResult) {
         println!(
             "Existing security products: {}",
             result.existing_security_products.join(", ")
+        );
+    }
+    if !result.exposed_rasp_markers.is_empty() {
+        println!(
+            "Exposed RASP markers: {}",
+            summarize_values(&result.exposed_rasp_markers, 5)
+        );
+    }
+    if !result.debug_metadata_entries.is_empty() {
+        println!(
+            "Debug/source metadata entries: {}",
+            summarize_values(&result.debug_metadata_entries, 5)
         );
     }
 
@@ -3026,7 +3218,10 @@ mod tests {
         IntegrityManifest, IntegrityPayload, IntegrityPolicy, IntegrityProtectedAsset,
         IntegrityProtectedAssetKind, IntegrityProvider, IntegrityTool,
     };
-    use artifact_inspector::{DexFile, FlutterInfo, InspectionResult, NativeLibrary};
+    use artifact_inspector::{
+        DexFile, FlutterInfo, InspectionResult, JavascriptBundleFormat, NativeLibrary,
+        ReactNativeEngine,
+    };
     use payload_pack::{build_payload_pack, PayloadPackBuildOptions, PayloadSigningKey};
     use rasp_config::parse_config;
     use rasp_core::ExitCode;
@@ -3131,6 +3326,72 @@ mod tests {
         assert_eq!(error.exit_code(), ExitCode::CompatibilityValidationFailure);
         assert!(error.message().contains("fail_on_warning"));
         assert!(error.message().contains("targetSdkVersion"));
+    }
+
+    #[test]
+    fn strict_javascript_hardening_rejects_non_hermes_react_native() {
+        let mut config = example_config();
+        config.hardening.javascript.require_hermes = true;
+        let mut inspection = InspectionResult::unsupported(PathBuf::from("app.apk"));
+        inspection.react_native_engine = Some(ReactNativeEngine::JavaScriptCore);
+        let payload_abis = payload_abi_libraries(&["arm64-v8a", "armeabi-v7a"]);
+
+        let error = validate_shield_compatibility(&config, &inspection, &payload_abis)
+            .expect_err("JavaScriptCore should fail when Hermes is required");
+
+        assert_eq!(error.exit_code(), ExitCode::CompatibilityValidationFailure);
+        assert!(error.message().contains("require_hermes"));
+        assert!(error.message().contains("JavaScriptCore"));
+    }
+
+    #[test]
+    fn strict_javascript_hardening_rejects_plaintext_bundle() {
+        let mut config = example_config();
+        config.hardening.javascript.fail_on_plaintext_bundle = true;
+        let mut inspection = InspectionResult::unsupported(PathBuf::from("app.apk"));
+        inspection.javascript_bundle_path = Some("assets/index.android.bundle".to_string());
+        inspection.javascript_bundle_format = Some(JavascriptBundleFormat::PlainText);
+        let payload_abis = payload_abi_libraries(&["arm64-v8a", "armeabi-v7a"]);
+
+        let error = validate_shield_compatibility(&config, &inspection, &payload_abis)
+            .expect_err("plain-text JavaScript should fail when configured");
+
+        assert_eq!(error.exit_code(), ExitCode::CompatibilityValidationFailure);
+        assert!(error.message().contains("fail_on_plaintext_bundle"));
+        assert!(error.message().contains("assets/index.android.bundle"));
+    }
+
+    #[test]
+    fn strict_anti_reverse_hardening_rejects_debuggable_apk() {
+        let mut config = example_config();
+        config.hardening.anti_reverse.fail_on_debuggable = true;
+        let mut inspection = InspectionResult::unsupported(PathBuf::from("app.apk"));
+        inspection.debuggable = Some(true);
+        let payload_abis = payload_abi_libraries(&["arm64-v8a", "armeabi-v7a"]);
+
+        let error = validate_shield_compatibility(&config, &inspection, &payload_abis)
+            .expect_err("debuggable app should fail when configured");
+
+        assert_eq!(error.exit_code(), ExitCode::CompatibilityValidationFailure);
+        assert!(error.message().contains("fail_on_debuggable"));
+    }
+
+    #[test]
+    fn strict_anti_reverse_hardening_rejects_exposed_markers() {
+        let mut config = example_config();
+        config.hardening.anti_reverse.fail_on_exposed_rasp_markers = true;
+        let mut inspection = InspectionResult::unsupported(PathBuf::from("app.apk"));
+        inspection
+            .exposed_rasp_markers
+            .push("entry:lib/arm64-v8a/libsecurity.so".to_string());
+        let payload_abis = payload_abi_libraries(&["arm64-v8a", "armeabi-v7a"]);
+
+        let error = validate_shield_compatibility(&config, &inspection, &payload_abis)
+            .expect_err("RASP markers should fail when configured");
+
+        assert_eq!(error.exit_code(), ExitCode::CompatibilityValidationFailure);
+        assert!(error.message().contains("fail_on_exposed_rasp_markers"));
+        assert!(error.message().contains("libsecurity.so"));
     }
 
     #[test]

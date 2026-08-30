@@ -28,9 +28,33 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 public final class RaspInitProvider extends ContentProvider {
-  private static final String TAG = "RaspShield";
+  private static final int STRING_XOR_KEY = 0x5a;
+  private static final byte[] TAG_BYTES = new byte[] {(byte) 0x08,
+      (byte) 0x3b, (byte) 0x29, (byte) 0x2a, (byte) 0x09, (byte) 0x32,
+      (byte) 0x33, (byte) 0x3f, (byte) 0x36, (byte) 0x3e};
+  private static final byte[] INTEGRITY_MANIFEST_ASSET_BYTES = new byte[] {
+      (byte) 0x28, (byte) 0x3b, (byte) 0x29, (byte) 0x2a, (byte) 0x77,
+      (byte) 0x29, (byte) 0x32, (byte) 0x33, (byte) 0x3f, (byte) 0x36,
+      (byte) 0x3e, (byte) 0x75, (byte) 0x33, (byte) 0x34, (byte) 0x2e,
+      (byte) 0x3f, (byte) 0x3d, (byte) 0x28, (byte) 0x33, (byte) 0x2e,
+      (byte) 0x23, (byte) 0x77, (byte) 0x37, (byte) 0x3b, (byte) 0x34,
+      (byte) 0x33, (byte) 0x3c, (byte) 0x3f, (byte) 0x29, (byte) 0x2e,
+      (byte) 0x74, (byte) 0x30, (byte) 0x29, (byte) 0x35, (byte) 0x34};
+  private static final byte[] NATIVE_LIBRARY_NAME_BYTES = new byte[] {
+      (byte) 0x29, (byte) 0x3f, (byte) 0x39, (byte) 0x2f, (byte) 0x28,
+      (byte) 0x33, (byte) 0x2e, (byte) 0x23};
+  private static final byte[] MONITOR_THREAD_NAME_BYTES = new byte[] {
+      (byte) 0x08, (byte) 0x3b, (byte) 0x29, (byte) 0x2a, (byte) 0x09,
+      (byte) 0x32, (byte) 0x33, (byte) 0x3f, (byte) 0x36, (byte) 0x3e,
+      (byte) 0x17, (byte) 0x35, (byte) 0x34, (byte) 0x33, (byte) 0x2e,
+      (byte) 0x35, (byte) 0x28};
+  private static final String TAG = decodeAscii(TAG_BYTES);
   private static final String INTEGRITY_MANIFEST_ASSET =
-      "rasp-shield/integrity-manifest.json";
+      decodeAscii(INTEGRITY_MANIFEST_ASSET_BYTES);
+  private static final String NATIVE_LIBRARY_NAME =
+      decodeAscii(NATIVE_LIBRARY_NAME_BYTES);
+  private static final String MONITOR_THREAD_NAME =
+      decodeAscii(MONITOR_THREAD_NAME_BYTES);
   private static final int ACTION_ALLOW = 0;
   private static final int ACTION_REPORT = 1;
   private static final int ACTION_WARN = 2;
@@ -54,11 +78,19 @@ public final class RaspInitProvider extends ContentProvider {
 
   static {
     try {
-      System.loadLibrary("security");
+      System.loadLibrary(NATIVE_LIBRARY_NAME);
       nativeLibraryLoaded = true;
     } catch (Throwable ignored) {
       nativeLibraryLoaded = false;
     }
+  }
+
+  private static String decodeAscii(byte[] encoded) {
+    char[] decoded = new char[encoded.length];
+    for (int i = 0; i < encoded.length; i++) {
+      decoded[i] = (char) (((int) encoded[i] & 0xff) ^ STRING_XOR_KEY);
+    }
+    return new String(decoded);
   }
 
   private static native int nativeInitialize(Context context, int reportThreshold,
@@ -239,7 +271,7 @@ public final class RaspInitProvider extends ContentProvider {
       public void run() {
         runMonitorLoop(context, policy);
       }
-    }, "RaspShieldMonitor");
+    }, MONITOR_THREAD_NAME);
     monitor.setDaemon(true);
     monitor.start();
   }

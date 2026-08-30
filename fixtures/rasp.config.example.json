@@ -69,6 +69,17 @@
     "deep_scan_on_suspicion": true,
     "monitor_background_state": false
   },
+  "hardening": {
+    "javascript": {
+      "require_hermes": false,
+      "fail_on_plaintext_bundle": false
+    },
+    "anti_reverse": {
+      "fail_on_debuggable": false,
+      "fail_on_debug_metadata": false,
+      "fail_on_exposed_rasp_markers": false
+    }
+  },
   "android": {
     "initializer": "CONTENT_PROVIDER",
     "supported_abis": [

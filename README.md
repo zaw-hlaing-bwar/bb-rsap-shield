@@ -33,6 +33,10 @@ Gradle, Metro, Flutter, Play signing, or your release pipeline.
   hook-related environment variables, native hook frameworks such as Dobby,
   ShadowHook, xHook, Whale, HookZz, and libhooker, plus native runtime
   self-checksum monitoring.
+- Runtime payload anti-reversing hardening: the native library exports only
+  `JNI_OnLoad`, registers JNI methods dynamically, builds with release linker
+  hardening and section garbage collection, and masks common detector/bootstrap
+  marker strings at rest.
 - Integrity checks: startup package/certificate validation, startup payload
   self-integrity, bounded startup hashing for small protected JavaScript assets,
   deferred monitor hashing for larger JavaScript and Flutter assets, and APK
@@ -327,11 +331,12 @@ Usage: rasp-cli verify [OPTIONS] --input <INPUT>
 | `--report <REPORT>` | No | stdout | JSON verification report path. |
 | `--expected-cert-sha256 <EXPECTED_CERT_SHA256>` | No | | 64-character signing certificate SHA-256 digest to require in the APK. If omitted, the signing certificate check is skipped with a warning. |
 
-Verification checks include APK inspection, ZIP safety, internal integrity
-manifest presence and metadata consistency, package metadata, private bootstrap
-provider, protected asset digests, bootstrap DEX, native payload libraries,
-exact payload digest manifest bindings, APK inventory, optional Flutter
-protected assets, and optional signing certificate matching.
+Verification checks include APK inspection, ZIP safety, anti-reversing posture
+warnings, JavaScript hardening posture, exposed RASP marker warnings, internal
+integrity manifest presence and metadata consistency, package metadata, private
+bootstrap provider, protected asset digests, bootstrap DEX, native payload
+libraries, exact payload digest manifest bindings, APK inventory, optional
+Flutter protected assets, and optional signing certificate matching.
 
 ### `rasp-cli runtime-smoke`
 
@@ -509,6 +514,7 @@ The config file is strict JSON. Unknown fields are rejected. See
 | `protections` | Yes | Protection rules and weights. Missing child rules default to disabled. |
 | `risk_policy` | Yes | Risk thresholds and configured responses. |
 | `runtime` | Yes | Runtime monitoring settings. |
+| `hardening` | No | Build-time anti-reversing checks. Defaults to warning-only posture reporting. |
 | `android` | Yes | Android-specific package, ABI, SDK, and signing expectations. |
 | `telemetry` | No | Reserved telemetry configuration. Defaults to disabled. |
 | `output` | No | Reserved output preferences. Command flags currently control report paths. |
@@ -582,6 +588,20 @@ Offline behavior values:
 | `scan_interval_ms.maximum` | Yes | `15000` | Maximum scan interval. Must be greater than or equal to minimum. |
 | `deep_scan_on_suspicion` | Yes | `true` | Run broader scans after suspicious signals. |
 | `monitor_background_state` | Yes | `false` | Continue monitoring while the app is backgrounded. |
+
+### `hardening`
+
+These settings make `rasp-cli shield` fail when the input APK does not meet the
+configured anti-reversing posture. `rasp-cli verify` reports the same signals as
+warning-grade checks by default.
+
+| Field | Default | Description |
+| --- | --- | --- |
+| `javascript.require_hermes` | `false` | Require React Native APKs to be detected as Hermes rather than JavaScriptCore or unknown React Native. |
+| `javascript.fail_on_plaintext_bundle` | `false` | Reject APKs whose detected JavaScript bundle appears to be plain-text JavaScript. |
+| `anti_reverse.fail_on_debuggable` | `false` | Reject APKs with `android:debuggable="true"`. |
+| `anti_reverse.fail_on_debug_metadata` | `false` | Reject APKs containing source maps, mapping files, symbol files, or similar debug/source metadata entries. |
+| `anti_reverse.fail_on_exposed_rasp_markers` | `false` | Reject APKs that already expose default RASP Shield marker paths, provider names, authorities, or native library names. |
 
 ### `android`
 

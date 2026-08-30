@@ -27,7 +27,12 @@
   },
   "checks": {
     "apk_inspection": "PASS: APK inspection completed",
+    "anti_reverse_posture": "PASS: APK does not expose debug posture signals checked by rasp-cli",
+    "javascript_hardening": "PASS: JavaScript bundle posture does not expose plain React Native bytecode risk",
+    "rasp_marker_exposure": "WARN: default RASP markers are exposed: entry:assets/rasp-shield/integrity-manifest.json, entry:lib/arm64-v8a/libsecurity.so",
     "zip_safety": "PASS: ZIP contains no duplicate or unsafe paths"
   },
-  "warnings": []
+  "warnings": [
+    "rasp_marker_exposure: default RASP markers are exposed: entry:assets/rasp-shield/integrity-manifest.json, entry:lib/arm64-v8a/libsecurity.so"
+  ]
 }

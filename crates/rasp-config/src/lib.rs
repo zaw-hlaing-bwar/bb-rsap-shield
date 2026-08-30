@@ -32,6 +32,8 @@ pub struct RaspConfig {
     pub risk_policy: RiskPolicyConfig,
     #[serde(default)]
     pub runtime: RuntimeConfig,
+    #[serde(default)]
+    pub hardening: HardeningConfig,
     pub android: AndroidConfig,
     #[serde(default)]
     pub telemetry: TelemetryConfig,
@@ -157,6 +159,35 @@ impl Default for RuntimeConfig {
             monitor_background_state: false,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(deny_unknown_fields)]
+pub struct HardeningConfig {
+    #[serde(default)]
+    pub javascript: JavascriptHardeningConfig,
+    #[serde(default)]
+    pub anti_reverse: AntiReverseHardeningConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(deny_unknown_fields)]
+pub struct JavascriptHardeningConfig {
+    #[serde(default)]
+    pub require_hermes: bool,
+    #[serde(default)]
+    pub fail_on_plaintext_bundle: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(deny_unknown_fields)]
+pub struct AntiReverseHardeningConfig {
+    #[serde(default)]
+    pub fail_on_debuggable: bool,
+    #[serde(default)]
+    pub fail_on_debug_metadata: bool,
+    #[serde(default)]
+    pub fail_on_exposed_rasp_markers: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -552,6 +583,23 @@ mod tests {
             config.application.expected_package_name,
             "com.example.mobile"
         );
+        assert!(!config.hardening.javascript.require_hermes);
+    }
+
+    #[test]
+    fn parses_hardening_config() {
+        let configured = VALID_CONFIG.replace(
+            "\"android\": {",
+            "\"hardening\": { \"javascript\": { \"require_hermes\": true, \"fail_on_plaintext_bundle\": true }, \"anti_reverse\": { \"fail_on_debuggable\": true, \"fail_on_debug_metadata\": true, \"fail_on_exposed_rasp_markers\": true } },\n      \"android\": {",
+        );
+
+        let config = parse_config(&configured).expect("hardening config");
+
+        assert!(config.hardening.javascript.require_hermes);
+        assert!(config.hardening.javascript.fail_on_plaintext_bundle);
+        assert!(config.hardening.anti_reverse.fail_on_debuggable);
+        assert!(config.hardening.anti_reverse.fail_on_debug_metadata);
+        assert!(config.hardening.anti_reverse.fail_on_exposed_rasp_markers);
     }
 
     #[test]

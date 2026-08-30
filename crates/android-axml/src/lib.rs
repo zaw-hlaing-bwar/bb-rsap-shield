@@ -47,6 +47,7 @@ pub struct AndroidManifest {
     pub min_sdk: Option<u32>,
     pub target_sdk: Option<u32>,
     pub application_class: Option<String>,
+    pub debuggable: Option<bool>,
     pub extract_native_libs: Option<bool>,
     pub main_activity: Option<String>,
     pub providers: Vec<ProviderDeclaration>,
@@ -289,6 +290,7 @@ fn apply_start_element(
         }
         "application" => {
             state.manifest.application_class = attr_string(&attributes, "name");
+            state.manifest.debuggable = attr_bool(&attributes, "debuggable");
             state.manifest.extract_native_libs = attr_bool(&attributes, "extractNativeLibs");
         }
         "provider" => {

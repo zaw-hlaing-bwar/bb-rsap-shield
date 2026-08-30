@@ -125,6 +125,29 @@
         "monitor_background_state": { "type": "boolean" }
       }
     },
+    "hardening": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "javascript": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "require_hermes": { "type": "boolean", "default": false },
+            "fail_on_plaintext_bundle": { "type": "boolean", "default": false }
+          }
+        },
+        "anti_reverse": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "fail_on_debuggable": { "type": "boolean", "default": false },
+            "fail_on_debug_metadata": { "type": "boolean", "default": false },
+            "fail_on_exposed_rasp_markers": { "type": "boolean", "default": false }
+          }
+        }
+      }
+    },
     "android": {
       "type": "object",
       "additionalProperties": false,

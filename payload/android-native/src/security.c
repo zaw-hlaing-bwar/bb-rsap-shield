@@ -83,43 +83,107 @@ static uint8_t g_proc_net_tcp_restricted = 0U;
 static uint8_t g_proc_net_tcp6_restricted = 0U;
 static uint8_t g_proc_net_unix_restricted = 0U;
 
-static const char *const k_frida_map_tokens[] = {
-    "frida",       "gum-js-loop",  "frida-agent", "frida-gadget",
-    "linjector",   "re.frida",     "gum-js",      "libfrida",
+#define RASP_TOKEN_XOR_KEY 0x5aU
+#define RASP_ENCODED_TOKEN_BYTES 32U
+#define RASP_DECODED_TOKEN_SIZE (RASP_ENCODED_TOKEN_BYTES + 1U)
+#define RASP_DECODED_LONG_STRING_SIZE 96U
+#define RASP_ARRAY_COUNT(array) (sizeof(array) / sizeof((array)[0]))
+
+typedef struct RaspEncodedString {
+  uint8_t length;
+  uint8_t bytes[RASP_ENCODED_TOKEN_BYTES];
+} RaspEncodedString;
+
+static const RaspEncodedString k_frida_map_tokens[] = {
+    {5U, {0x3c, 0x28, 0x33, 0x3e, 0x3b}},
+    {11U, {0x3d, 0x2f, 0x37, 0x77, 0x30, 0x29, 0x77, 0x36, 0x35, 0x35,
+           0x2a}},
+    {11U, {0x3c, 0x28, 0x33, 0x3e, 0x3b, 0x77, 0x3b, 0x3d, 0x3f, 0x34,
+           0x2e}},
+    {12U, {0x3c, 0x28, 0x33, 0x3e, 0x3b, 0x77, 0x3d, 0x3b, 0x3e, 0x3d,
+           0x3f, 0x2e}},
+    {9U, {0x36, 0x33, 0x34, 0x30, 0x3f, 0x39, 0x2e, 0x35, 0x28}},
+    {8U, {0x28, 0x3f, 0x74, 0x3c, 0x28, 0x33, 0x3e, 0x3b}},
+    {6U, {0x3d, 0x2f, 0x37, 0x77, 0x30, 0x29}},
+    {8U, {0x36, 0x33, 0x38, 0x3c, 0x28, 0x33, 0x3e, 0x3b}},
 };
 
-static const char *const k_xposed_tokens[] = {
-    "xposed", "lsposed", "edxposed", "sandhook", "yahahfa", "epic",
+static const RaspEncodedString k_xposed_tokens[] = {
+    {6U, {0x22, 0x2a, 0x35, 0x29, 0x3f, 0x3e}},
+    {7U, {0x36, 0x29, 0x2a, 0x35, 0x29, 0x3f, 0x3e}},
+    {8U, {0x3f, 0x3e, 0x22, 0x2a, 0x35, 0x29, 0x3f, 0x3e}},
+    {8U, {0x29, 0x3b, 0x34, 0x3e, 0x32, 0x35, 0x35, 0x31}},
+    {7U, {0x23, 0x3b, 0x32, 0x3b, 0x32, 0x3c, 0x3b}},
+    {4U, {0x3f, 0x2a, 0x33, 0x39}},
 };
 
-static const char *const k_substrate_tokens[] = {
-    "substrate", "cydia_substrate", "libsubstrate",
+static const RaspEncodedString k_substrate_tokens[] = {
+    {9U, {0x29, 0x2f, 0x38, 0x29, 0x2e, 0x28, 0x3b, 0x2e, 0x3f}},
+    {15U, {0x39, 0x23, 0x3e, 0x33, 0x3b, 0x05, 0x29, 0x2f, 0x38, 0x29,
+           0x2e, 0x28, 0x3b, 0x2e, 0x3f}},
+    {12U, {0x36, 0x33, 0x38, 0x29, 0x2f, 0x38, 0x29, 0x2e, 0x28, 0x3b,
+           0x2e, 0x3f}},
 };
 
-static const char *const k_zygisk_tokens[] = {
-    "zygisk", "riru", "magisk",
+static const RaspEncodedString k_zygisk_tokens[] = {
+    {6U, {0x20, 0x23, 0x3d, 0x33, 0x29, 0x31}},
+    {4U, {0x28, 0x33, 0x28, 0x2f}},
+    {6U, {0x37, 0x3b, 0x3d, 0x33, 0x29, 0x31}},
 };
 
-static const char *const k_native_hook_tokens[] = {
-    "dobby", "shadowhook", "xhook", "whale", "libhooker", "hookzz",
+static const RaspEncodedString k_native_hook_tokens[] = {
+    {5U, {0x3e, 0x35, 0x38, 0x38, 0x23}},
+    {10U, {0x29, 0x32, 0x3b, 0x3e, 0x35, 0x2d, 0x32, 0x35, 0x35, 0x31}},
+    {5U, {0x22, 0x32, 0x35, 0x35, 0x31}},
+    {5U, {0x2d, 0x32, 0x3b, 0x36, 0x3f}},
+    {9U, {0x36, 0x33, 0x38, 0x32, 0x35, 0x35, 0x31, 0x3f, 0x28}},
+    {6U, {0x32, 0x35, 0x35, 0x31, 0x20, 0x20}},
 };
 
-static const char *const k_frida_thread_tokens[] = {
-    "frida", "re.frida", "gum-js-loop", "pool-frida", "frida-helper",
-    "frida-agent", "frida-dbgsignal", "frida-gadget", "linjector", "gum-js",
+static const RaspEncodedString k_frida_thread_tokens[] = {
+    {5U, {0x3c, 0x28, 0x33, 0x3e, 0x3b}},
+    {8U, {0x28, 0x3f, 0x74, 0x3c, 0x28, 0x33, 0x3e, 0x3b}},
+    {11U, {0x3d, 0x2f, 0x37, 0x77, 0x30, 0x29, 0x77, 0x36, 0x35, 0x35,
+           0x2a}},
+    {10U, {0x2a, 0x35, 0x35, 0x36, 0x77, 0x3c, 0x28, 0x33, 0x3e, 0x3b}},
+    {12U, {0x3c, 0x28, 0x33, 0x3e, 0x3b, 0x77, 0x32, 0x3f, 0x36, 0x2a,
+           0x3f, 0x28}},
+    {11U, {0x3c, 0x28, 0x33, 0x3e, 0x3b, 0x77, 0x3b, 0x3d, 0x3f, 0x34,
+           0x2e}},
+    {15U, {0x3c, 0x28, 0x33, 0x3e, 0x3b, 0x77, 0x3e, 0x38, 0x3d, 0x29,
+           0x33, 0x3d, 0x34, 0x3b, 0x36}},
+    {12U, {0x3c, 0x28, 0x33, 0x3e, 0x3b, 0x77, 0x3d, 0x3b, 0x3e, 0x3d,
+           0x3f, 0x2e}},
+    {9U, {0x36, 0x33, 0x34, 0x30, 0x3f, 0x39, 0x2e, 0x35, 0x28}},
+    {6U, {0x3d, 0x2f, 0x37, 0x77, 0x30, 0x29}},
 };
 
-static const char *const k_glib_thread_tokens[] = {
-    "gmain", "gdbus",
+static const RaspEncodedString k_glib_thread_tokens[] = {
+    {5U, {0x3d, 0x37, 0x3b, 0x33, 0x34}},
+    {5U, {0x3d, 0x3e, 0x38, 0x2f, 0x29}},
 };
 
-static const char *const k_unix_socket_tokens[] = {
-    "frida", "gum-js-loop", "re.frida", "linjector",
+static const RaspEncodedString k_unix_socket_tokens[] = {
+    {5U, {0x3c, 0x28, 0x33, 0x3e, 0x3b}},
+    {11U, {0x3d, 0x2f, 0x37, 0x77, 0x30, 0x29, 0x77, 0x36, 0x35, 0x35,
+           0x2a}},
+    {8U, {0x28, 0x3f, 0x74, 0x3c, 0x28, 0x33, 0x3e, 0x3b}},
+    {9U, {0x36, 0x33, 0x34, 0x30, 0x3f, 0x39, 0x2e, 0x35, 0x28}},
 };
 
-static const char *const k_environment_tokens[] = {
-    "LD_PRELOAD", "frida", "gum-js", "xposed", "zygisk", "substrate",
-    "dobby",      "shadowhook", "xhook", "whale", "libhooker", "hookzz",
+static const RaspEncodedString k_environment_tokens[] = {
+    {10U, {0x16, 0x1e, 0x05, 0x0a, 0x08, 0x1f, 0x16, 0x15, 0x1b, 0x1e}},
+    {5U, {0x3c, 0x28, 0x33, 0x3e, 0x3b}},
+    {6U, {0x3d, 0x2f, 0x37, 0x77, 0x30, 0x29}},
+    {6U, {0x22, 0x2a, 0x35, 0x29, 0x3f, 0x3e}},
+    {6U, {0x20, 0x23, 0x3d, 0x33, 0x29, 0x31}},
+    {9U, {0x29, 0x2f, 0x38, 0x29, 0x2e, 0x28, 0x3b, 0x2e, 0x3f}},
+    {5U, {0x3e, 0x35, 0x38, 0x38, 0x23}},
+    {10U, {0x29, 0x32, 0x3b, 0x3e, 0x35, 0x2d, 0x32, 0x35, 0x35, 0x31}},
+    {5U, {0x22, 0x32, 0x35, 0x35, 0x31}},
+    {5U, {0x2d, 0x32, 0x3b, 0x36, 0x3f}},
+    {9U, {0x36, 0x33, 0x38, 0x32, 0x35, 0x35, 0x31, 0x3f, 0x28}},
+    {6U, {0x32, 0x35, 0x35, 0x31, 0x20, 0x20}},
 };
 
 static const char *const k_root_su_paths[] = {
@@ -180,16 +244,61 @@ static const char *const k_emulator_property_names[] = {
     "ro.product.name",
 };
 
-static const char *const k_emulator_build_tokens[] = {
-    "generic", "sdk_gphone", "google_sdk", "emulator", "goldfish",
-    "ranchu", "vbox", "virtualbox", "genymotion", "nox",
+static const RaspEncodedString k_emulator_build_tokens[] = {
+    {7U, {0x3d, 0x3f, 0x34, 0x3f, 0x28, 0x33, 0x39}},
+    {10U, {0x29, 0x3e, 0x31, 0x05, 0x3d, 0x2a, 0x32, 0x35, 0x34, 0x3f}},
+    {10U, {0x3d, 0x35, 0x35, 0x3d, 0x36, 0x3f, 0x05, 0x29, 0x3e, 0x31}},
+    {8U, {0x3f, 0x37, 0x2f, 0x36, 0x3b, 0x2e, 0x35, 0x28}},
+    {8U, {0x3d, 0x35, 0x36, 0x3e, 0x3c, 0x33, 0x29, 0x32}},
+    {6U, {0x28, 0x3b, 0x34, 0x39, 0x32, 0x2f}},
+    {4U, {0x2c, 0x38, 0x35, 0x22}},
+    {10U, {0x2c, 0x33, 0x28, 0x2e, 0x2f, 0x3b, 0x36, 0x38, 0x35, 0x22}},
+    {10U, {0x3d, 0x3f, 0x34, 0x23, 0x37, 0x35, 0x2e, 0x33, 0x35, 0x34}},
+    {3U, {0x34, 0x35, 0x22}},
 };
+
+static const uint8_t k_libsecurity_name[] = {
+    0x36U, 0x33U, 0x38U, 0x29U, 0x3fU, 0x39U, 0x2fU,
+    0x28U, 0x33U, 0x2eU, 0x23U, 0x74U, 0x29U, 0x35U};
 
 #if RASP_SECURITY_HAS_JNI
 static const char *const k_emulator_build_fields[] = {
     "BOARD", "BOOTLOADER", "BRAND", "DEVICE", "FINGERPRINT",
     "HARDWARE", "MANUFACTURER", "MODEL", "PRODUCT",
 };
+
+static const uint8_t k_bootstrap_class_name[] = {
+    0x39U, 0x35U, 0x37U, 0x75U, 0x28U, 0x3bU, 0x29U, 0x2aU, 0x75U,
+    0x28U, 0x2fU, 0x34U, 0x2eU, 0x33U, 0x37U, 0x3fU, 0x75U, 0x38U,
+    0x35U, 0x35U, 0x2eU, 0x29U, 0x2eU, 0x28U, 0x3bU, 0x2aU, 0x75U,
+    0x08U, 0x3bU, 0x29U, 0x2aU, 0x13U, 0x34U, 0x33U, 0x2eU, 0x0aU,
+    0x28U, 0x35U, 0x2cU, 0x33U, 0x3eU, 0x3fU, 0x28U};
+static const uint8_t k_native_initialize_name[] = {
+    0x34U, 0x3bU, 0x2eU, 0x33U, 0x2cU, 0x3fU, 0x13U, 0x34U,
+    0x33U, 0x2eU, 0x33U, 0x3bU, 0x36U, 0x33U, 0x20U, 0x3fU};
+static const uint8_t k_native_monitor_scan_name[] = {
+    0x34U, 0x3bU, 0x2eU, 0x33U, 0x2cU, 0x3fU, 0x17U, 0x35U, 0x34U,
+    0x33U, 0x2eU, 0x35U, 0x28U, 0x09U, 0x39U, 0x3bU, 0x34U};
+static const uint8_t k_native_last_action_code_name[] = {
+    0x34U, 0x3bU, 0x2eU, 0x33U, 0x2cU, 0x3fU, 0x16U, 0x3bU, 0x29U, 0x2eU,
+    0x1bU, 0x39U, 0x2eU, 0x33U, 0x35U, 0x34U, 0x19U, 0x35U, 0x3eU, 0x3fU};
+static const uint8_t k_native_last_report_json_name[] = {
+    0x34U, 0x3bU, 0x2eU, 0x33U, 0x2cU, 0x3fU, 0x16U, 0x3bU, 0x29U, 0x2eU,
+    0x08U, 0x3fU, 0x2aU, 0x35U, 0x28U, 0x2eU, 0x10U, 0x29U, 0x35U, 0x34U};
+static const uint8_t k_xposed_bridge_class_name[] = {
+    0x3eU, 0x3fU, 0x75U, 0x28U, 0x35U, 0x38U, 0x2cU, 0x75U, 0x3bU,
+    0x34U, 0x3eU, 0x28U, 0x35U, 0x33U, 0x3eU, 0x75U, 0x22U, 0x2aU,
+    0x35U, 0x29U, 0x3fU, 0x3eU, 0x75U, 0x02U, 0x2aU, 0x35U, 0x29U,
+    0x3fU, 0x3eU, 0x18U, 0x28U, 0x33U, 0x3eU, 0x3dU, 0x3fU};
+static const uint8_t k_lsposed_native_api_class_name[] = {
+    0x35U, 0x28U, 0x3dU, 0x75U, 0x36U, 0x29U, 0x2aU, 0x35U, 0x29U, 0x3fU,
+    0x3eU, 0x75U, 0x36U, 0x29U, 0x2aU, 0x3eU, 0x75U, 0x34U, 0x3bU, 0x2eU,
+    0x33U, 0x2cU, 0x3fU, 0x38U, 0x28U, 0x33U, 0x3eU, 0x3dU, 0x3fU, 0x75U,
+    0x14U, 0x3bU, 0x2eU, 0x33U, 0x2cU, 0x3fU, 0x1bU, 0x0aU, 0x13U};
+static const uint8_t k_substrate_ms_class_name[] = {
+    0x39U, 0x35U, 0x37U, 0x75U, 0x29U, 0x3bU, 0x2fU, 0x28U,
+    0x33U, 0x31U, 0x75U, 0x29U, 0x2fU, 0x38U, 0x29U, 0x2eU,
+    0x28U, 0x3bU, 0x2eU, 0x3fU, 0x75U, 0x17U, 0x09U};
 #endif
 
 static void rasp_copy_string(char *destination, size_t destination_size,
@@ -284,6 +393,55 @@ static const char *rasp_first_matching_token(const char *text,
       return tokens[index];
     }
   }
+  return NULL;
+}
+
+static int rasp_decode_xor_bytes(const uint8_t *encoded_bytes,
+                                 size_t encoded_length, char *buffer,
+                                 size_t buffer_size) {
+  if (encoded_bytes == NULL || buffer == NULL || buffer_size == 0U ||
+      encoded_length >= buffer_size) {
+    if (buffer != NULL && buffer_size > 0U) {
+      buffer[0] = '\0';
+    }
+    return 0;
+  }
+
+  for (size_t index = 0U; index < encoded_length; index++) {
+    buffer[index] = (char)(encoded_bytes[index] ^ RASP_TOKEN_XOR_KEY);
+  }
+  buffer[encoded_length] = '\0';
+  return 1;
+}
+
+static int rasp_decode_encoded_string(const RaspEncodedString *encoded,
+                                      char *buffer, size_t buffer_size) {
+  if (encoded == NULL || encoded->length > RASP_ENCODED_TOKEN_BYTES) {
+    if (buffer != NULL && buffer_size > 0U) {
+      buffer[0] = '\0';
+    }
+    return 0;
+  }
+  return rasp_decode_xor_bytes(encoded->bytes, encoded->length, buffer,
+                               buffer_size);
+}
+
+static const char *rasp_first_matching_encoded_token(
+    const char *text, const RaspEncodedString *tokens, size_t token_count,
+    char *token_buffer, size_t token_buffer_size) {
+  if (text == NULL || tokens == NULL || token_buffer == NULL ||
+      token_buffer_size == 0U) {
+    return NULL;
+  }
+
+  for (size_t index = 0U; index < token_count; index++) {
+    if (rasp_decode_encoded_string(&tokens[index], token_buffer,
+                                   token_buffer_size) &&
+        rasp_contains_case_insensitive(text, token_buffer)) {
+      return token_buffer;
+    }
+  }
+  token_buffer[0] = '\0';
   return NULL;
 }
 
@@ -705,44 +863,47 @@ static int rasp_maps_line_is_writable_executable(const char *line) {
 
 static void rasp_scan_maps_line(const char *line, RaspSecurityReport *report) {
   const char *token;
+  char token_buffer[RASP_DECODED_TOKEN_SIZE];
 
-  token = rasp_first_matching_token(
-      line, k_frida_map_tokens,
-      sizeof(k_frida_map_tokens) / sizeof(k_frida_map_tokens[0]));
+  token = rasp_first_matching_encoded_token(
+      line, k_frida_map_tokens, RASP_ARRAY_COUNT(k_frida_map_tokens),
+      token_buffer, sizeof(token_buffer));
   if (token != NULL) {
     rasp_report_add_signal(report, "instrumentation.frida_library",
                            RASP_CATEGORY_INSTRUMENTATION, 95U, 90U, 45U,
                            token);
   }
 
-  token = rasp_first_matching_token(
-      line, k_xposed_tokens, sizeof(k_xposed_tokens) / sizeof(k_xposed_tokens[0]));
+  token = rasp_first_matching_encoded_token(
+      line, k_xposed_tokens, RASP_ARRAY_COUNT(k_xposed_tokens), token_buffer,
+      sizeof(token_buffer));
   if (token != NULL) {
     rasp_report_add_signal(report, "instrumentation.xposed_framework",
                            RASP_CATEGORY_INSTRUMENTATION, 90U, 80U, 35U,
                            token);
   }
 
-  token = rasp_first_matching_token(line, k_substrate_tokens,
-                                    sizeof(k_substrate_tokens) /
-                                        sizeof(k_substrate_tokens[0]));
+  token = rasp_first_matching_encoded_token(
+      line, k_substrate_tokens, RASP_ARRAY_COUNT(k_substrate_tokens),
+      token_buffer, sizeof(token_buffer));
   if (token != NULL) {
     rasp_report_add_signal(report, "instrumentation.substrate_framework",
                            RASP_CATEGORY_INSTRUMENTATION, 85U, 75U, 35U,
                            token);
   }
 
-  token = rasp_first_matching_token(
-      line, k_zygisk_tokens, sizeof(k_zygisk_tokens) / sizeof(k_zygisk_tokens[0]));
+  token = rasp_first_matching_encoded_token(
+      line, k_zygisk_tokens, RASP_ARRAY_COUNT(k_zygisk_tokens), token_buffer,
+      sizeof(token_buffer));
   if (token != NULL) {
     rasp_report_add_signal(report, "instrumentation.zygisk_module",
                            RASP_CATEGORY_INSTRUMENTATION, 80U, 75U, 35U,
                            token);
   }
 
-  token = rasp_first_matching_token(line, k_native_hook_tokens,
-                                    sizeof(k_native_hook_tokens) /
-                                        sizeof(k_native_hook_tokens[0]));
+  token = rasp_first_matching_encoded_token(
+      line, k_native_hook_tokens, RASP_ARRAY_COUNT(k_native_hook_tokens),
+      token_buffer, sizeof(token_buffer));
   if (token != NULL) {
     rasp_report_add_signal(report, "instrumentation.native_hook_framework",
                            RASP_CATEGORY_INSTRUMENTATION, 80U, 70U, 35U,
@@ -803,19 +964,20 @@ static void rasp_trim_newline(char *value) {
 static void rasp_scan_thread_name_value(const char *name,
                                         RaspSecurityReport *report) {
   const char *token;
+  char token_buffer[RASP_DECODED_TOKEN_SIZE];
 
-  token = rasp_first_matching_token(
-      name, k_frida_thread_tokens,
-      sizeof(k_frida_thread_tokens) / sizeof(k_frida_thread_tokens[0]));
+  token = rasp_first_matching_encoded_token(
+      name, k_frida_thread_tokens, RASP_ARRAY_COUNT(k_frida_thread_tokens),
+      token_buffer, sizeof(token_buffer));
   if (token != NULL) {
     rasp_report_add_signal(report, "instrumentation.frida_thread",
                            RASP_CATEGORY_INSTRUMENTATION, 90U, 80U, 35U,
                            token);
   }
 
-  token = rasp_first_matching_token(
-      name, k_glib_thread_tokens,
-      sizeof(k_glib_thread_tokens) / sizeof(k_glib_thread_tokens[0]));
+  token = rasp_first_matching_encoded_token(
+      name, k_glib_thread_tokens, RASP_ARRAY_COUNT(k_glib_thread_tokens),
+      token_buffer, sizeof(token_buffer));
   if (token != NULL) {
     rasp_report_add_signal(report, "instrumentation.glib_thread",
                            RASP_CATEGORY_INSTRUMENTATION, 65U, 45U, 20U,
@@ -869,10 +1031,11 @@ static void rasp_scan_task_threads(const char *task_directory,
 
 static void rasp_scan_fd_target(const char *target, RaspSecurityReport *report) {
   const char *token;
+  char token_buffer[RASP_DECODED_TOKEN_SIZE];
 
-  token = rasp_first_matching_token(
-      target, k_frida_map_tokens,
-      sizeof(k_frida_map_tokens) / sizeof(k_frida_map_tokens[0]));
+  token = rasp_first_matching_encoded_token(
+      target, k_frida_map_tokens, RASP_ARRAY_COUNT(k_frida_map_tokens),
+      token_buffer, sizeof(token_buffer));
   if (token != NULL) {
     rasp_report_add_signal(report, "instrumentation.frida_file_descriptor",
                            RASP_CATEGORY_INSTRUMENTATION, 80U, 70U, 25U,
@@ -1045,9 +1208,10 @@ static void rasp_scan_tcp_path(const char *path, RaspSecurityReport *report,
 }
 
 static void rasp_scan_unix_line(const char *line, RaspSecurityReport *report) {
-  const char *token = rasp_first_matching_token(
-      line, k_unix_socket_tokens,
-      sizeof(k_unix_socket_tokens) / sizeof(k_unix_socket_tokens[0]));
+  char token_buffer[RASP_DECODED_TOKEN_SIZE];
+  const char *token = rasp_first_matching_encoded_token(
+      line, k_unix_socket_tokens, RASP_ARRAY_COUNT(k_unix_socket_tokens),
+      token_buffer, sizeof(token_buffer));
   if (token != NULL) {
     rasp_report_add_signal(report, "instrumentation.frida_unix_socket",
                            RASP_CATEGORY_INSTRUMENTATION, 75U, 65U, 25U,
@@ -1079,6 +1243,7 @@ static void rasp_scan_environment_path(const char *path,
   FILE *file = fopen(path, "rb");
   size_t bytes_read;
   const char *token;
+  char token_buffer[RASP_DECODED_TOKEN_SIZE];
 
   if (file == NULL) {
     return;
@@ -1093,9 +1258,9 @@ static void rasp_scan_environment_path(const char *path,
     }
   }
 
-  token = rasp_first_matching_token(
-      buffer, k_environment_tokens,
-      sizeof(k_environment_tokens) / sizeof(k_environment_tokens[0]));
+  token = rasp_first_matching_encoded_token(
+      buffer, k_environment_tokens, RASP_ARRAY_COUNT(k_environment_tokens),
+      token_buffer, sizeof(token_buffer));
   if (token != NULL) {
     rasp_report_add_signal(report, "instrumentation.suspicious_environment",
                            RASP_CATEGORY_INSTRUMENTATION, 65U, 50U, 25U,
@@ -1446,15 +1611,16 @@ static void rasp_scan_emulator_build_pair(const char *name, const char *value,
                                           RaspSecurityReport *report,
                                           uint8_t weight) {
   const char *token;
+  char token_buffer[RASP_DECODED_TOKEN_SIZE];
   char evidence[RASP_SECURITY_SIGNAL_EVIDENCE_SIZE];
 
   if (name == NULL || value == NULL || value[0] == '\0') {
     return;
   }
 
-  token = rasp_first_matching_token(
-      value, k_emulator_build_tokens,
-      sizeof(k_emulator_build_tokens) / sizeof(k_emulator_build_tokens[0]));
+  token = rasp_first_matching_encoded_token(
+      value, k_emulator_build_tokens, RASP_ARRAY_COUNT(k_emulator_build_tokens),
+      token_buffer, sizeof(token_buffer));
   if (token == NULL) {
     return;
   }
@@ -1496,13 +1662,14 @@ static void rasp_scan_emulator_cpuinfo_line(const char *line,
                                             RaspSecurityReport *report,
                                             uint8_t weight) {
   const char *token;
+  char token_buffer[RASP_DECODED_TOKEN_SIZE];
 
   if (line == NULL || report == NULL) {
     return;
   }
-  token = rasp_first_matching_token(
-      line, k_emulator_build_tokens,
-      sizeof(k_emulator_build_tokens) / sizeof(k_emulator_build_tokens[0]));
+  token = rasp_first_matching_encoded_token(
+      line, k_emulator_build_tokens, RASP_ARRAY_COUNT(k_emulator_build_tokens),
+      token_buffer, sizeof(token_buffer));
   if (token != NULL) {
     rasp_report_add_signal(report, "emulator.cpuinfo",
                            RASP_CATEGORY_EMULATOR, 75U, 55U, weight, token);
@@ -1544,8 +1711,11 @@ static int rasp_parse_self_text_maps_line(const char *line,
                                           unsigned long long *start,
                                           unsigned long long *end) {
   char permissions[5] = {0};
+  char library_name[RASP_DECODED_TOKEN_SIZE];
 
-  if (!rasp_contains_case_insensitive(line, "libsecurity.so")) {
+  if (!rasp_decode_xor_bytes(k_libsecurity_name, RASP_ARRAY_COUNT(k_libsecurity_name),
+                             library_name, sizeof(library_name)) ||
+      !rasp_contains_case_insensitive(line, library_name)) {
     return 0;
   }
   if (!rasp_parse_maps_range_and_permissions(line, start, end, permissions)) {
@@ -1603,7 +1773,7 @@ static void rasp_scan_self_text_integrity_path(const char *path,
   if (checksum != g_self_text_checksum || total_hashed != g_self_text_bytes) {
     rasp_report_add_signal(report, "integrity.native_text_modified",
                            RASP_CATEGORY_INTEGRITY, 95U, 90U, 100U,
-                           "libsecurity.so text changed");
+                           "native text changed");
   }
 }
 
@@ -1628,22 +1798,33 @@ static int rasp_jni_find_class(JNIEnv *env, const char *class_name) {
 }
 
 static void rasp_scan_java_hook_classes(JNIEnv *env, RaspSecurityReport *report) {
-  if (rasp_jni_find_class(env, "de/robv/android/xposed/XposedBridge")) {
+  char class_name[RASP_DECODED_LONG_STRING_SIZE];
+
+  if (rasp_decode_xor_bytes(k_xposed_bridge_class_name,
+                            RASP_ARRAY_COUNT(k_xposed_bridge_class_name),
+                            class_name, sizeof(class_name)) &&
+      rasp_jni_find_class(env, class_name)) {
     rasp_report_add_signal(report, "instrumentation.xposed_java_class",
                            RASP_CATEGORY_INSTRUMENTATION, 90U, 80U, 35U,
-                           "XposedBridge");
+                           "java hook bridge");
   }
 
-  if (rasp_jni_find_class(env, "org/lsposed/lspd/nativebridge/NativeAPI")) {
+  if (rasp_decode_xor_bytes(k_lsposed_native_api_class_name,
+                            RASP_ARRAY_COUNT(k_lsposed_native_api_class_name),
+                            class_name, sizeof(class_name)) &&
+      rasp_jni_find_class(env, class_name)) {
     rasp_report_add_signal(report, "instrumentation.lsposed_java_class",
                            RASP_CATEGORY_INSTRUMENTATION, 85U, 75U, 30U,
-                           "LSPosed NativeAPI");
+                           "java hook native bridge");
   }
 
-  if (rasp_jni_find_class(env, "com/saurik/substrate/MS")) {
+  if (rasp_decode_xor_bytes(k_substrate_ms_class_name,
+                            RASP_ARRAY_COUNT(k_substrate_ms_class_name),
+                            class_name, sizeof(class_name)) &&
+      rasp_jni_find_class(env, class_name)) {
     rasp_report_add_signal(report, "instrumentation.substrate_java_class",
                            RASP_CATEGORY_INSTRUMENTATION, 80U, 70U, 30U,
-                           "Substrate MS");
+                           "java hook class");
   }
 }
 
@@ -1979,13 +2160,97 @@ size_t rasp_security_last_report_json(char *buffer, size_t buffer_size) {
   return rasp_security_report_to_json(&g_last_report, buffer, buffer_size);
 }
 
-JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
-  (void)vm;
-  (void)reserved;
-  return JNI_VERSION_1_6;
+#if RASP_SECURITY_HAS_JNI
+#define RASP_SIG_NATIVE_INITIALIZE                                             \
+  "(Landroid/content/Context;IIIILjava/lang/String;Ljava/lang/String;"         \
+  "Ljava/lang/String;IIIIIIIIIIIIII)I"
+#define RASP_SIG_NATIVE_MONITOR_SCAN                                           \
+  "(IIIILjava/lang/String;Ljava/lang/String;IIIIIIIIIII)I"
+
+static jint rasp_native_initialize(
+    JNIEnv *env, jclass clazz, jobject context, jint report_threshold,
+    jint warn_threshold, jint restrict_threshold, jint terminate_threshold,
+    jstring runtime_high_risk_action, jstring startup_integrity_action,
+    jstring startup_payload_tampering_action, jint package_matches,
+    jint certificate_matches, jint payload_matches, jint protected_assets_match,
+    jint debugger_detection_enabled, jint debugger_detection_weight,
+    jint instrumentation_detection_enabled, jint instrumentation_detection_weight,
+    jint memory_integrity_enabled, jint memory_integrity_weight,
+    jint root_detection_enabled, jint root_detection_weight,
+    jint emulator_detection_enabled, jint emulator_detection_weight);
+static jint rasp_native_last_action_code(JNIEnv *env, jclass clazz);
+static jint rasp_native_monitor_scan(
+    JNIEnv *env, jclass clazz, jint report_threshold, jint warn_threshold,
+    jint restrict_threshold, jint terminate_threshold,
+    jstring runtime_high_risk_action, jstring startup_payload_tampering_action,
+    jint protected_assets_match, jint debugger_detection_enabled,
+    jint debugger_detection_weight, jint instrumentation_detection_enabled,
+    jint instrumentation_detection_weight, jint memory_integrity_enabled,
+    jint memory_integrity_weight, jint root_detection_enabled,
+    jint root_detection_weight, jint emulator_detection_enabled,
+    jint emulator_detection_weight);
+static jstring rasp_native_last_report_json(JNIEnv *env, jclass clazz);
+
+static int rasp_register_natives(JNIEnv *env) {
+  char bootstrap_class[RASP_DECODED_LONG_STRING_SIZE];
+  char native_initialize_name[RASP_DECODED_TOKEN_SIZE];
+  char native_monitor_scan_name[RASP_DECODED_TOKEN_SIZE];
+  char native_last_action_code_name[RASP_DECODED_TOKEN_SIZE];
+  char native_last_report_json_name[RASP_DECODED_TOKEN_SIZE];
+  jclass clazz;
+  jint result;
+  JNINativeMethod methods[4];
+
+  if (env == NULL) {
+    return -1;
+  }
+
+  if (!rasp_decode_xor_bytes(k_bootstrap_class_name,
+                             RASP_ARRAY_COUNT(k_bootstrap_class_name),
+                             bootstrap_class, sizeof(bootstrap_class)) ||
+      !rasp_decode_xor_bytes(k_native_initialize_name,
+                             RASP_ARRAY_COUNT(k_native_initialize_name),
+                             native_initialize_name,
+                             sizeof(native_initialize_name)) ||
+      !rasp_decode_xor_bytes(k_native_monitor_scan_name,
+                             RASP_ARRAY_COUNT(k_native_monitor_scan_name),
+                             native_monitor_scan_name,
+                             sizeof(native_monitor_scan_name)) ||
+      !rasp_decode_xor_bytes(k_native_last_action_code_name,
+                             RASP_ARRAY_COUNT(k_native_last_action_code_name),
+                             native_last_action_code_name,
+                             sizeof(native_last_action_code_name)) ||
+      !rasp_decode_xor_bytes(k_native_last_report_json_name,
+                             RASP_ARRAY_COUNT(k_native_last_report_json_name),
+                             native_last_report_json_name,
+                             sizeof(native_last_report_json_name))) {
+    return -1;
+  }
+
+  methods[0].name = native_initialize_name;
+  methods[0].signature = RASP_SIG_NATIVE_INITIALIZE;
+  methods[0].fnPtr = (void *)rasp_native_initialize;
+  methods[1].name = native_monitor_scan_name;
+  methods[1].signature = RASP_SIG_NATIVE_MONITOR_SCAN;
+  methods[1].fnPtr = (void *)rasp_native_monitor_scan;
+  methods[2].name = native_last_action_code_name;
+  methods[2].signature = "()I";
+  methods[2].fnPtr = (void *)rasp_native_last_action_code;
+  methods[3].name = native_last_report_json_name;
+  methods[3].signature = "()Ljava/lang/String;";
+  methods[3].fnPtr = (void *)rasp_native_last_report_json;
+
+  clazz = (*env)->FindClass(env, bootstrap_class);
+  if (clazz == NULL) {
+    return -1;
+  }
+
+  result = (*env)->RegisterNatives(
+      env, clazz, methods, (jint)RASP_ARRAY_COUNT(methods));
+  (*env)->DeleteLocalRef(env, clazz);
+  return result == JNI_OK ? 0 : -1;
 }
 
-#if RASP_SECURITY_HAS_JNI
 static void rasp_enforce_terminal_action(const RaspSecurityReport *report) {
   if (report == NULL) {
     return;
@@ -1998,9 +2263,31 @@ static void rasp_enforce_terminal_action(const RaspSecurityReport *report) {
   (void)kill(getpid(), SIGKILL);
   _exit(10);
 }
+#endif
 
-JNIEXPORT jint JNICALL
-Java_com_rasp_runtime_bootstrap_RaspInitProvider_nativeInitialize(
+JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
+  (void)reserved;
+#if RASP_SECURITY_HAS_JNI
+  JNIEnv *env = NULL;
+
+  if (vm == NULL) {
+    return JNI_ERR;
+  }
+  if ((*vm)->GetEnv(vm, (void **)&env, JNI_VERSION_1_6) != JNI_OK ||
+      env == NULL) {
+    return JNI_ERR;
+  }
+  if (rasp_register_natives(env) != 0) {
+    return JNI_ERR;
+  }
+#else
+  (void)vm;
+#endif
+  return JNI_VERSION_1_6;
+}
+
+#if RASP_SECURITY_HAS_JNI
+static jint rasp_native_initialize(
     JNIEnv *env, jclass clazz, jobject context, jint report_threshold,
     jint warn_threshold, jint restrict_threshold, jint terminate_threshold,
     jstring runtime_high_risk_action, jstring startup_integrity_action,
@@ -2046,16 +2333,13 @@ Java_com_rasp_runtime_bootstrap_RaspInitProvider_nativeInitialize(
   return (jint)report.risk_score;
 }
 
-JNIEXPORT jint JNICALL
-Java_com_rasp_runtime_bootstrap_RaspInitProvider_nativeLastActionCode(
-    JNIEnv *env, jclass clazz) {
+static jint rasp_native_last_action_code(JNIEnv *env, jclass clazz) {
   (void)env;
   (void)clazz;
   return (jint)g_last_report.action;
 }
 
-JNIEXPORT jint JNICALL
-Java_com_rasp_runtime_bootstrap_RaspInitProvider_nativeMonitorScan(
+static jint rasp_native_monitor_scan(
     JNIEnv *env, jclass clazz, jint report_threshold, jint warn_threshold,
     jint restrict_threshold, jint terminate_threshold,
     jstring runtime_high_risk_action, jstring startup_payload_tampering_action,
@@ -2097,9 +2381,7 @@ Java_com_rasp_runtime_bootstrap_RaspInitProvider_nativeMonitorScan(
   return (jint)report.risk_score;
 }
 
-JNIEXPORT jstring JNICALL
-Java_com_rasp_runtime_bootstrap_RaspInitProvider_nativeLastReportJson(
-    JNIEnv *env, jclass clazz) {
+static jstring rasp_native_last_report_json(JNIEnv *env, jclass clazz) {
   char buffer[RASP_SECURITY_REPORT_JSON_SIZE];
   (void)clazz;
 
@@ -2281,15 +2563,16 @@ int rasp_security_test_proc_net_scan_disabled_after_error(int error_code) {
 int rasp_security_test_scan_environment_text(const char *text,
                                              RaspSecurityReport *report) {
   const char *token;
+  char token_buffer[RASP_DECODED_TOKEN_SIZE];
 
   if (text == NULL || report == NULL) {
     return -1;
   }
 
   rasp_report_init(report);
-  token = rasp_first_matching_token(
-      text, k_environment_tokens,
-      sizeof(k_environment_tokens) / sizeof(k_environment_tokens[0]));
+  token = rasp_first_matching_encoded_token(
+      text, k_environment_tokens, RASP_ARRAY_COUNT(k_environment_tokens),
+      token_buffer, sizeof(token_buffer));
   if (token != NULL) {
     rasp_report_add_signal(report, "instrumentation.suspicious_environment",
                            RASP_CATEGORY_INSTRUMENTATION, 65U, 50U, 25U,

@@ -74,7 +74,9 @@ pub struct InspectionResult {
     pub flutter: Option<FlutterInfo>,
     pub react_native_engine: Option<ReactNativeEngine>,
     pub javascript_bundle_path: Option<String>,
+    pub javascript_bundle_format: Option<JavascriptBundleFormat>,
     pub application_class: Option<String>,
+    pub debuggable: Option<bool>,
     pub extract_native_libs: Option<bool>,
     pub main_activity: Option<String>,
     pub content_providers: Vec<ContentProvider>,
@@ -83,6 +85,8 @@ pub struct InspectionResult {
     pub signature_entries: Vec<String>,
     pub apk_compression: ApkCompressionInfo,
     pub existing_security_products: Vec<String>,
+    pub exposed_rasp_markers: Vec<String>,
+    pub debug_metadata_entries: Vec<String>,
     pub compatibility_warnings: Vec<String>,
     pub warnings: Vec<String>,
 }
@@ -106,7 +110,9 @@ impl InspectionResult {
             flutter: None,
             react_native_engine: None,
             javascript_bundle_path: None,
+            javascript_bundle_format: None,
             application_class: None,
+            debuggable: None,
             extract_native_libs: None,
             main_activity: None,
             content_providers: Vec::new(),
@@ -115,6 +121,8 @@ impl InspectionResult {
             signature_entries: Vec::new(),
             apk_compression: ApkCompressionInfo::default(),
             existing_security_products: Vec::new(),
+            exposed_rasp_markers: Vec::new(),
+            debug_metadata_entries: Vec::new(),
             compatibility_warnings: Vec::new(),
             warnings: Vec::new(),
         }
@@ -167,6 +175,14 @@ pub enum ReactNativeEngine {
     UnknownReactNative,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum JavascriptBundleFormat {
+    PlainText,
+    HermesBytecode,
+    Unknown,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FlutterInfo {
     pub detected: bool,
@@ -217,6 +233,7 @@ pub fn inspect_apk(path: impl AsRef<Path>) -> Result<InspectionResult, InspectEr
     let mut v1_signature_blocks = Vec::new();
     let mut manifest_bytes = None;
     let mut javascript_bundle_path = None;
+    let mut javascript_bundle_format = None;
     let mut flutter_asset_entries = Vec::new();
     let mut compression = ApkCompressionInfo::default();
     let mut entry_names = Vec::new();
@@ -286,6 +303,8 @@ pub fn inspect_apk(path: impl AsRef<Path>) -> Result<InspectionResult, InspectEr
 
         if is_javascript_bundle_path(&path_name) && javascript_bundle_path.is_none() {
             javascript_bundle_path = Some(path_name.clone());
+            javascript_bundle_format =
+                Some(detect_javascript_bundle_format(&path_name, &mut entry)?);
         }
 
         if is_flutter_asset_entry(&path_name) && !entry.is_dir() {
@@ -337,6 +356,7 @@ pub fn inspect_apk(path: impl AsRef<Path>) -> Result<InspectionResult, InspectEr
     let mut min_sdk = None;
     let mut target_sdk = None;
     let mut application_class = None;
+    let mut debuggable = None;
     let mut extract_native_libs = None;
     let mut main_activity = None;
     let mut content_providers = Vec::new();
@@ -350,6 +370,7 @@ pub fn inspect_apk(path: impl AsRef<Path>) -> Result<InspectionResult, InspectEr
                 min_sdk = manifest.min_sdk;
                 target_sdk = manifest.target_sdk;
                 application_class = manifest.application_class;
+                debuggable = manifest.debuggable;
                 extract_native_libs = manifest.extract_native_libs;
                 main_activity = manifest.main_activity;
                 content_providers = manifest
@@ -387,6 +408,9 @@ pub fn inspect_apk(path: impl AsRef<Path>) -> Result<InspectionResult, InspectEr
         compatibility_warnings
             .push("React Native JavaScript bundle was not identified".to_string());
     }
+    if debuggable == Some(true) {
+        compatibility_warnings.push("APK application is debuggable".to_string());
+    }
     if supported_abis.is_empty() {
         compatibility_warnings.push("APK contains no native library ABI directories".to_string());
     }
@@ -400,6 +424,8 @@ pub fn inspect_apk(path: impl AsRef<Path>) -> Result<InspectionResult, InspectEr
         warnings
             .push("launchable main activity was not decoded from AndroidManifest.xml".to_string());
     }
+    let exposed_rasp_markers = detect_exposed_rasp_markers(&entry_names, &content_providers);
+    let debug_metadata_entries = detect_debug_metadata_entries(&entry_names);
     warnings.extend(signature_inspection.warnings);
 
     Ok(InspectionResult {
@@ -419,7 +445,9 @@ pub fn inspect_apk(path: impl AsRef<Path>) -> Result<InspectionResult, InspectEr
         flutter,
         react_native_engine,
         javascript_bundle_path,
+        javascript_bundle_format,
         application_class,
+        debuggable,
         extract_native_libs,
         main_activity,
         content_providers,
@@ -428,6 +456,8 @@ pub fn inspect_apk(path: impl AsRef<Path>) -> Result<InspectionResult, InspectEr
         signature_entries,
         apk_compression: compression,
         existing_security_products,
+        exposed_rasp_markers,
+        debug_metadata_entries,
         compatibility_warnings,
         warnings,
     })
@@ -1172,6 +1202,48 @@ fn is_javascript_bundle_path(path: &str) -> bool {
         || path.ends_with(".hbc")
 }
 
+fn detect_javascript_bundle_format(
+    path: &str,
+    entry: &mut impl Read,
+) -> Result<JavascriptBundleFormat, io::Error> {
+    if path.ends_with(".hbc") {
+        return Ok(JavascriptBundleFormat::HermesBytecode);
+    }
+
+    let mut prefix = [0u8; 512];
+    let bytes_read = entry.read(&mut prefix)?;
+    let prefix = &prefix[..bytes_read];
+    if looks_like_plaintext_javascript(prefix) {
+        return Ok(JavascriptBundleFormat::PlainText);
+    }
+    if looks_like_binary_bundle(prefix) {
+        return Ok(JavascriptBundleFormat::HermesBytecode);
+    }
+
+    Ok(JavascriptBundleFormat::Unknown)
+}
+
+fn looks_like_plaintext_javascript(bytes: &[u8]) -> bool {
+    if bytes.is_empty()
+        || !bytes
+            .iter()
+            .all(|byte| matches!(*byte, b'\t' | b'\n' | b'\r' | 0x20..=0x7e))
+    {
+        return false;
+    }
+
+    bytes.iter().any(|byte| !byte.is_ascii_whitespace())
+}
+
+fn looks_like_binary_bundle(bytes: &[u8]) -> bool {
+    !bytes.is_empty()
+        && bytes
+            .iter()
+            .filter(|byte| !matches!(**byte, b'\t' | b'\n' | b'\r' | 0x20..=0x7e))
+            .count()
+            > bytes.len() / 4
+}
+
 fn is_flutter_asset_entry(path: &str) -> bool {
     path.starts_with("assets/flutter_assets/") && !path.ends_with('/')
 }
@@ -1270,13 +1342,77 @@ fn detect_security_products(entry_names: &[String]) -> Vec<String> {
     detected
 }
 
+fn detect_exposed_rasp_markers(
+    entry_names: &[String],
+    content_providers: &[ContentProvider],
+) -> Vec<String> {
+    let mut markers = BTreeSet::new();
+    for entry_name in entry_names {
+        let lower = entry_name.to_ascii_lowercase();
+        if lower.contains("rasp-shield") {
+            markers.insert(format!("entry:{entry_name}"));
+        }
+        if lower.ends_with("/libsecurity.so") {
+            markers.insert(format!("entry:{entry_name}"));
+        }
+    }
+
+    for provider in content_providers {
+        if provider
+            .name
+            .as_deref()
+            .is_some_and(|name| name.starts_with("com.rasp.runtime."))
+        {
+            markers.insert(format!(
+                "provider:{}",
+                provider.name.as_deref().unwrap_or_default()
+            ));
+        }
+        if provider
+            .authorities
+            .as_deref()
+            .is_some_and(|authorities| authorities.contains(".rasp."))
+        {
+            markers.insert(format!(
+                "authority:{}",
+                provider.authorities.as_deref().unwrap_or_default()
+            ));
+        }
+    }
+
+    markers.into_iter().collect()
+}
+
+fn detect_debug_metadata_entries(entry_names: &[String]) -> Vec<String> {
+    let mut entries = BTreeSet::new();
+    for entry_name in entry_names {
+        let lower = entry_name.to_ascii_lowercase();
+        if lower.ends_with(".map")
+            || lower.ends_with(".js.map")
+            || lower.ends_with(".symbols")
+            || lower.ends_with(".dbg")
+            || lower.contains("/debug/")
+            || lower.contains("/sources/")
+            || lower.ends_with("/mapping.txt")
+            || lower.ends_with("/seeds.txt")
+            || lower.ends_with("/resources.txt")
+        {
+            entries.insert(entry_name.clone());
+        }
+    }
+
+    entries.into_iter().collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        detect_flutter, detect_react_native_engine, dex_order, extract_v1_signature_certificates,
-        hex_lower, is_dex_path, is_flutter_asset_entry, is_javascript_bundle_path,
-        is_v1_certificate_signature_entry, merge_certificate_observations,
-        native_library_from_entry, sha256_bytes, ApkSignatureScheme, CertificateObservation,
+        detect_debug_metadata_entries, detect_exposed_rasp_markers, detect_flutter,
+        detect_javascript_bundle_format, detect_react_native_engine, dex_order,
+        extract_v1_signature_certificates, hex_lower, is_dex_path, is_flutter_asset_entry,
+        is_javascript_bundle_path, is_v1_certificate_signature_entry,
+        merge_certificate_observations, native_library_from_entry, sha256_bytes,
+        ApkSignatureScheme, CertificateObservation, ContentProvider, JavascriptBundleFormat,
         ReactNativeEngine,
     };
 
@@ -1310,11 +1446,65 @@ mod tests {
     }
 
     #[test]
+    fn classifies_plaintext_javascript_bundle() {
+        let mut bytes = b"var __BUNDLE_START_TIME__=this.nativePerformanceNow();".as_slice();
+
+        let format = detect_javascript_bundle_format("assets/index.android.bundle", &mut bytes)
+            .expect("detect JavaScript bundle format");
+
+        assert_eq!(format, JavascriptBundleFormat::PlainText);
+    }
+
+    #[test]
+    fn classifies_hbc_bundle_path_as_hermes_bytecode() {
+        let mut bytes = b"not inspected for hbc paths".as_slice();
+
+        let format = detect_javascript_bundle_format("assets/main.hbc", &mut bytes)
+            .expect("detect JavaScript bundle format");
+
+        assert_eq!(format, JavascriptBundleFormat::HermesBytecode);
+    }
+
+    #[test]
     fn detects_hermes_from_native_library() {
         let library = native_library_from_entry("lib/arm64-v8a/libhermes.so", 10, false)
             .expect("native library");
         let engine = detect_react_native_engine(&[], &[library], None);
         assert_eq!(engine, Some(ReactNativeEngine::Hermes));
+    }
+
+    #[test]
+    fn detects_exposed_rasp_markers() {
+        let entries = vec![
+            "assets/rasp-shield/integrity-manifest.json".to_string(),
+            "lib/arm64-v8a/libsecurity.so".to_string(),
+        ];
+        let providers = vec![ContentProvider {
+            name: Some("com.rasp.runtime.bootstrap.RaspInitProvider".to_string()),
+            authorities: Some("com.example.rasp.12345678".to_string()),
+            exported: Some(false),
+        }];
+
+        let markers = detect_exposed_rasp_markers(&entries, &providers);
+
+        assert_eq!(markers.len(), 4);
+    }
+
+    #[test]
+    fn detects_debug_metadata_entries() {
+        let entries = vec![
+            "assets/index.android.bundle.map".to_string(),
+            "META-INF/com.android.tools/proguard/mapping.txt".to_string(),
+            "assets/image.png".to_string(),
+        ];
+
+        assert_eq!(
+            detect_debug_metadata_entries(&entries),
+            vec![
+                "META-INF/com.android.tools/proguard/mapping.txt".to_string(),
+                "assets/index.android.bundle.map".to_string()
+            ]
+        );
     }
 
     #[test]
