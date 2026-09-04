@@ -25,7 +25,8 @@ use payload_pack::{
     PAYLOAD_LICENSE_NOTICE_FILE, PAYLOAD_MANIFEST_FILE, PAYLOAD_SBOM_FILE, PAYLOAD_SIGNATURE_FILE,
 };
 use rasp_config::{
-    is_valid_env_var_name, load_config, RaspConfig, RiskAction, CONFIG_SCHEMA_VERSION,
+    is_valid_env_var_name, load_config, AntiTamperResponseProfile, RaspConfig, RiskAction,
+    CONFIG_SCHEMA_VERSION,
 };
 use rasp_core::{ExitCode, RaspError, RaspResult};
 use rasp_report::{
@@ -148,6 +149,8 @@ struct BuildPayloadPackArgs {
     output: PathBuf,
     #[arg(long)]
     bootstrap_dex: PathBuf,
+    #[arg(long)]
+    bootstrap_runtime_dex: Option<PathBuf>,
     #[arg(long = "native-lib", value_name = "ABI=PATH")]
     native_libs: Vec<String>,
     #[arg(long)]
@@ -366,6 +369,7 @@ fn shield(args: ShieldArgs) -> RaspResult<ExitCode> {
     let payload_descriptor = PayloadDescriptor {
         version: payload_pack.manifest.payload_version.clone(),
         bootstrap_dex_entry: rewrite_report.inserted_dex_entry.clone(),
+        bootstrap_runtime_dex_entry: rewrite_report.inserted_runtime_dex_entry.clone(),
         native_library_entries: rewrite_report.inserted_native_library_entries.clone(),
     };
 
@@ -460,6 +464,9 @@ fn shield(args: ShieldArgs) -> RaspResult<ExitCode> {
         rewrite_report.inserted_integrity_manifest_entry
     );
     println!("inserted_dex: {}", rewrite_report.inserted_dex_entry);
+    if let Some(runtime_dex_entry) = &rewrite_report.inserted_runtime_dex_entry {
+        println!("inserted_runtime_dex: {runtime_dex_entry}");
+    }
     println!(
         "inserted_native_libraries: {}",
         rewrite_report.inserted_native_library_entries.join(", ")
@@ -544,8 +551,8 @@ fn verify(args: VerifyArgs) -> RaspResult<ExitCode> {
     );
     record_anti_reverse_posture_checks(&inspection, &mut checks, &mut warnings);
 
-    let integrity_manifest = match read_integrity_manifest(&args.input) {
-        Ok(manifest) => {
+    let integrity_manifest = match read_integrity_manifest(&args.input, &inspection) {
+        Ok(loaded) => {
             record_check(
                 &mut checks,
                 &mut failures,
@@ -553,7 +560,7 @@ fn verify(args: VerifyArgs) -> RaspResult<ExitCode> {
                 true,
                 "internal integrity manifest is present and parseable",
             );
-            Some(manifest)
+            Some(loaded)
         }
         Err(error) => {
             record_check(
@@ -567,10 +574,17 @@ fn verify(args: VerifyArgs) -> RaspResult<ExitCode> {
         }
     };
 
-    if let Some(manifest) = integrity_manifest.as_ref() {
+    if let Some(loaded) = integrity_manifest.as_ref() {
+        let manifest = &loaded.manifest;
         verify_integrity_manifest_metadata(manifest, &mut checks, &mut failures);
         verify_application_metadata(manifest, &inspection, &mut checks, &mut failures);
-        verify_provider(manifest, &inspection, &mut checks, &mut failures);
+        verify_provider(
+            manifest,
+            &inspection,
+            &loaded.entry_name,
+            &mut checks,
+            &mut failures,
+        );
         verify_protected_assets(
             manifest,
             &args.input,
@@ -590,16 +604,17 @@ fn verify(args: VerifyArgs) -> RaspResult<ExitCode> {
     );
     let application = integrity_manifest
         .as_ref()
-        .map(|manifest| VerificationApplication {
+        .map(|loaded| VerificationApplication {
             package_name: inspection.package_name.clone(),
-            provider_name: Some(manifest.provider.name.clone()),
-            provider_authorities: Some(manifest.provider.authorities.clone()),
+            provider_name: Some(loaded.manifest.provider.name.clone()),
+            provider_authorities: Some(loaded.manifest.provider.authorities.clone()),
         });
     let payload = integrity_manifest
         .as_ref()
-        .map(|manifest| VerificationPayload {
-            integrity_manifest_entry: INTEGRITY_MANIFEST_ENTRY.to_string(),
-            protected_assets: manifest
+        .map(|loaded| VerificationPayload {
+            integrity_manifest_entry: loaded.entry_name.clone(),
+            protected_assets: loaded
+                .manifest
                 .protected_assets
                 .iter()
                 .map(|asset| asset.path.clone())
@@ -698,6 +713,7 @@ fn build_payload_pack_command(args: BuildPayloadPackArgs) -> RaspResult<ExitCode
         &PayloadPackBuildOptions {
             output_root: args.output.clone(),
             bootstrap_dex_path: args.bootstrap_dex.clone(),
+            bootstrap_runtime_dex_path: args.bootstrap_runtime_dex.clone(),
             abi_libraries,
             payload_version: args.payload_version.clone(),
             minimum_cli_version,
@@ -829,6 +845,17 @@ fn validate_payload_build_args(args: &BuildPayloadPackArgs) -> RaspResult<()> {
             ExitCode::InvalidCliArguments,
             "at least one --native-lib ABI=PATH entry is required",
         ));
+    }
+    if let Some(runtime_dex_path) = &args.bootstrap_runtime_dex {
+        if !runtime_dex_path.is_file() {
+            return Err(RaspError::new(
+                ExitCode::InvalidCliArguments,
+                format!(
+                    "--bootstrap-runtime-dex must be an existing file: {}",
+                    runtime_dex_path.display()
+                ),
+            ));
+        }
     }
     if !is_valid_env_var_name(&args.payload_signing_key_env) {
         return Err(RaspError::new(
@@ -1508,11 +1535,63 @@ fn summarize_values(values: &[String], maximum: usize) -> String {
     )
 }
 
-fn read_integrity_manifest(path: &Path) -> Result<IntegrityManifest, String> {
-    let bytes = read_zip_entry(path, INTEGRITY_MANIFEST_ENTRY)?;
-    serde_json::from_slice(&bytes).map_err(|error| {
-        format!("failed to parse {INTEGRITY_MANIFEST_ENTRY} as integrity manifest JSON: {error}")
-    })
+#[derive(Debug, Clone)]
+struct LoadedIntegrityManifest {
+    entry_name: String,
+    manifest: IntegrityManifest,
+}
+
+fn read_integrity_manifest(
+    path: &Path,
+    inspection: &InspectionResult,
+) -> Result<LoadedIntegrityManifest, String> {
+    let mut candidates = Vec::new();
+    for provider in &inspection.content_providers {
+        for asset_path in provider.metadata.values() {
+            add_manifest_candidate(&mut candidates, asset_path);
+        }
+    }
+    add_manifest_entry_candidate(&mut candidates, INTEGRITY_MANIFEST_ENTRY);
+
+    let mut errors = Vec::new();
+    for entry_name in candidates {
+        match read_zip_entry(path, &entry_name) {
+            Ok(bytes) => match serde_json::from_slice::<IntegrityManifest>(&bytes) {
+                Ok(manifest) if manifest.manifest_type == "RASP_SHIELD_ANDROID_INTEGRITY" => {
+                    return Ok(LoadedIntegrityManifest {
+                        entry_name,
+                        manifest,
+                    });
+                }
+                Ok(manifest) => errors.push(format!(
+                    "{entry_name}: unexpected manifest_type {}",
+                    manifest.manifest_type
+                )),
+                Err(error) => errors.push(format!(
+                    "{entry_name}: failed to parse integrity manifest JSON: {error}"
+                )),
+            },
+            Err(error) => errors.push(error),
+        }
+    }
+
+    Err(format!(
+        "APK does not contain a parseable RASP integrity manifest: {}",
+        errors.join("; ")
+    ))
+}
+
+fn add_manifest_candidate(candidates: &mut Vec<String>, asset_path: &str) {
+    if !is_safe_manifest_relative_path(asset_path) {
+        return;
+    }
+    add_manifest_entry_candidate(candidates, &format!("assets/{asset_path}"));
+}
+
+fn add_manifest_entry_candidate(candidates: &mut Vec<String>, entry_name: &str) {
+    if !candidates.iter().any(|candidate| candidate == entry_name) {
+        candidates.push(entry_name.to_string());
+    }
 }
 
 fn verify_integrity_manifest_metadata(
@@ -1594,6 +1673,33 @@ fn verify_integrity_manifest_metadata(
     if manifest.payload.files.is_empty() {
         metadata_failures.push("payload.files must include at least one digest".to_string());
     }
+    if !is_valid_native_library_load_name(&manifest.payload.native_library_name) {
+        metadata_failures
+            .push("payload.native_library_name must be a safe System.loadLibrary name".to_string());
+    }
+    if let Some(runtime) = &manifest.payload.encrypted_runtime {
+        if !is_safe_manifest_relative_path(&runtime.asset_path)
+            || runtime.asset_path.starts_with("assets/")
+        {
+            metadata_failures.push(
+                "payload.encrypted_runtime.asset_path must be a safe asset-relative path"
+                    .to_string(),
+            );
+        }
+        if !is_valid_java_class_name(&runtime.class_name) {
+            metadata_failures
+                .push("payload.encrypted_runtime.class_name must be a Java class name".to_string());
+        }
+        if !is_hex_sha256(&runtime.sha256) {
+            metadata_failures
+                .push("payload.encrypted_runtime.sha256 must be a SHA-256 digest".to_string());
+        }
+        if runtime.encryption != "XOR_SHA256_STREAM_V1" {
+            metadata_failures.push(
+                "payload.encrypted_runtime.encryption must be XOR_SHA256_STREAM_V1".to_string(),
+            );
+        }
+    }
     for (path, digest) in &manifest.payload.files {
         if !is_safe_manifest_relative_path(path) {
             metadata_failures.push(format!("payload.files contains unsafe path {path}"));
@@ -1607,6 +1713,7 @@ fn verify_integrity_manifest_metadata(
     }
     let mut protected_paths = BTreeSet::new();
     let mut bootstrap_count = 0usize;
+    let mut runtime_count = 0usize;
     for asset in &manifest.protected_assets {
         if !is_safe_manifest_relative_path(&asset.path) {
             metadata_failures.push(format!(
@@ -1629,11 +1736,25 @@ fn verify_integrity_manifest_metadata(
         if asset.kind == IntegrityProtectedAssetKind::BootstrapDex {
             bootstrap_count += 1;
         }
+        if asset.kind == IntegrityProtectedAssetKind::BootstrapRuntimeDex {
+            runtime_count += 1;
+        }
     }
     if bootstrap_count != 1 {
         metadata_failures.push(format!(
             "protected_assets must include exactly one BOOTSTRAP_DEX entry, got {bootstrap_count}"
         ));
+    }
+    if manifest.payload.encrypted_runtime.is_some() && runtime_count != 1 {
+        metadata_failures.push(format!(
+            "protected_assets must include exactly one BOOTSTRAP_RUNTIME_DEX entry when payload.encrypted_runtime is present, got {runtime_count}"
+        ));
+    }
+    if manifest.payload.encrypted_runtime.is_none() && runtime_count != 0 {
+        metadata_failures.push(
+            "protected_assets includes BOOTSTRAP_RUNTIME_DEX but payload.encrypted_runtime is missing"
+                .to_string(),
+        );
     }
     validate_apk_inventory_metadata(&manifest.apk_inventory, &mut metadata_failures);
 
@@ -1745,28 +1866,37 @@ fn verify_application_metadata(
 fn verify_provider(
     manifest: &IntegrityManifest,
     inspection: &InspectionResult,
+    integrity_manifest_entry: &str,
     checks: &mut BTreeMap<String, String>,
     failures: &mut Vec<String>,
 ) {
-    let provider_found = inspection.content_providers.iter().any(|provider| {
+    let provider = inspection.content_providers.iter().find(|provider| {
         provider.name.as_deref() == Some(manifest.provider.name.as_str())
             && provider.authorities.as_deref() == Some(manifest.provider.authorities.as_str())
             && provider.exported == Some(false)
+    });
+    let provider_found = provider.is_some();
+    let metadata_matches = provider.is_some_and(|provider| {
+        provider
+            .metadata
+            .values()
+            .any(|value| format!("assets/{value}") == integrity_manifest_entry)
+            || integrity_manifest_entry == INTEGRITY_MANIFEST_ENTRY && provider.metadata.is_empty()
     });
     record_check(
         checks,
         failures,
         "bootstrap_provider",
-        provider_found && !manifest.provider.exported,
-        if provider_found && !manifest.provider.exported {
+        provider_found && metadata_matches && !manifest.provider.exported,
+        if provider_found && metadata_matches && !manifest.provider.exported {
             format!(
-                "provider {} ({}) is present and not exported",
-                manifest.provider.name, manifest.provider.authorities
+                "provider {} ({}) is present, not exported, and references {}",
+                manifest.provider.name, manifest.provider.authorities, integrity_manifest_entry
             )
         } else {
             format!(
-                "provider {} ({}) was not found with exported=false",
-                manifest.provider.name, manifest.provider.authorities
+                "provider {} ({}) was not found with exported=false and metadata for {}",
+                manifest.provider.name, manifest.provider.authorities, integrity_manifest_entry
             )
         },
     );
@@ -1781,10 +1911,12 @@ fn verify_protected_assets(
 ) {
     let mut digest_failures = Vec::new();
     let mut bootstrap_failures = Vec::new();
+    let mut runtime_failures = Vec::new();
     let mut native_failures = Vec::new();
     let mut flutter_failures = Vec::new();
     let mut payload_digest_failures = Vec::new();
     let mut has_bootstrap = false;
+    let mut has_runtime = false;
     let mut native_count = 0usize;
     let mut flutter_asset_count = 0usize;
 
@@ -1819,6 +1951,42 @@ fn verify_protected_assets(
                     &mut payload_digest_failures,
                 );
             }
+            IntegrityProtectedAssetKind::BootstrapRuntimeDex => {
+                has_runtime = true;
+                if let Some(runtime) = &manifest.payload.encrypted_runtime {
+                    let expected_apk_path = format!("assets/{}", runtime.asset_path);
+                    if asset.path != expected_apk_path {
+                        runtime_failures.push(format!(
+                            "{} does not match payload.encrypted_runtime.asset_path {}",
+                            asset.path, runtime.asset_path
+                        ));
+                    }
+                    if !runtime.sha256.eq_ignore_ascii_case(&asset.sha256) {
+                        runtime_failures.push(format!(
+                            "payload.encrypted_runtime.sha256 for {} expected {}, got {}",
+                            asset.path, asset.sha256, runtime.sha256
+                        ));
+                    }
+                    if runtime.encryption != "XOR_SHA256_STREAM_V1" {
+                        runtime_failures.push(format!(
+                            "payload.encrypted_runtime.encryption for {} is unsupported: {}",
+                            asset.path, runtime.encryption
+                        ));
+                    }
+                } else {
+                    runtime_failures.push(format!(
+                        "{} declares BOOTSTRAP_RUNTIME_DEX but payload.encrypted_runtime is missing",
+                        asset.path
+                    ));
+                }
+                verify_payload_digest_binding(
+                    manifest,
+                    "bootstrap-runtime.dex",
+                    &asset.path,
+                    &asset.sha256,
+                    &mut payload_digest_failures,
+                );
+            }
             IntegrityProtectedAssetKind::NativeLibrary => {
                 native_count += 1;
                 if !inspection
@@ -1831,7 +1999,10 @@ fn verify_protected_assets(
                         asset.path
                     ));
                 }
-                if let Some(payload_path) = native_payload_path_for_apk_entry(&asset.path) {
+                if let Some(payload_path) = native_payload_path_for_apk_entry(
+                    &asset.path,
+                    &manifest.payload.native_library_name,
+                ) {
                     verify_payload_digest_binding(
                         manifest,
                         &payload_path,
@@ -1869,6 +2040,9 @@ fn verify_protected_assets(
     if !has_bootstrap {
         bootstrap_failures.push("no BOOTSTRAP_DEX protected asset is declared".to_string());
     }
+    if manifest.payload.encrypted_runtime.is_some() && !has_runtime {
+        runtime_failures.push("no BOOTSTRAP_RUNTIME_DEX protected asset is declared".to_string());
+    }
     if native_count == 0 {
         native_failures.push("no NATIVE_LIBRARY protected asset is declared".to_string());
     }
@@ -1884,6 +2058,19 @@ fn verify_protected_assets(
             digest_failures.join("; ")
         },
     );
+    if has_runtime || manifest.payload.encrypted_runtime.is_some() {
+        record_check(
+            checks,
+            failures,
+            "bootstrap_runtime_dex",
+            runtime_failures.is_empty(),
+            if runtime_failures.is_empty() {
+                "encrypted bootstrap runtime DEX is declared and bound".to_string()
+            } else {
+                runtime_failures.join("; ")
+            },
+        );
+    }
     record_check(
         checks,
         failures,
@@ -1950,14 +2137,50 @@ fn verify_payload_digest_binding(
     }
 }
 
-fn native_payload_path_for_apk_entry(apk_path: &str) -> Option<String> {
+fn native_payload_path_for_apk_entry(apk_path: &str, native_library_name: &str) -> Option<String> {
     let mut parts = apk_path.split('/');
+    let expected_file_name = format!("lib{native_library_name}.so");
     match (parts.next(), parts.next(), parts.next(), parts.next()) {
-        (Some("lib"), Some(abi), Some("libsecurity.so"), None) => {
+        (Some("lib"), Some(abi), Some(name), None) if name == expected_file_name => {
             Some(format!("{abi}/libsecurity.so"))
         }
         _ => None,
     }
+}
+
+fn is_valid_java_class_name(value: &str) -> bool {
+    let mut segments = value.split('.');
+    let mut segment_count = 0usize;
+    for segment in &mut segments {
+        segment_count += 1;
+        if !is_valid_java_identifier(segment) {
+            return false;
+        }
+    }
+    segment_count >= 2
+}
+
+fn is_valid_java_identifier(value: &str) -> bool {
+    let mut chars = value.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !(first == '_' || first.is_ascii_alphabetic()) {
+        return false;
+    }
+    chars.all(|character| character == '_' || character.is_ascii_alphanumeric())
+}
+
+fn is_valid_native_library_load_name(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '_')
+        && value
+            .chars()
+            .next()
+            .is_some_and(|character| character.is_ascii_alphabetic() || character == '_')
 }
 
 fn verify_apk_inventory(
@@ -2475,6 +2698,7 @@ fn payload_files_for_config(
 
     Ok(PayloadFiles {
         bootstrap_dex_path: payload_pack.bootstrap_dex_path.clone(),
+        bootstrap_runtime_dex_path: payload_pack.bootstrap_runtime_dex_path.clone(),
         abi_libraries,
     })
 }
@@ -2652,7 +2876,7 @@ fn expected_certificate_digests(
 }
 
 fn integrity_runtime_policy(config: &RaspConfig) -> IntegrityRuntimePolicy {
-    IntegrityRuntimePolicy {
+    let mut policy = IntegrityRuntimePolicy {
         thresholds: IntegrityRiskThresholds {
             report: config.risk_policy.thresholds.report,
             warn: config.risk_policy.thresholds.warn,
@@ -2696,6 +2920,93 @@ fn integrity_runtime_policy(config: &RaspConfig) -> IntegrityRuntimePolicy {
                 weight: config.protections.emulator_detection.weight,
             },
         },
+    };
+    apply_anti_tamper_response_profile(&mut policy, config.hardening.anti_reverse.response_profile);
+    policy
+}
+
+fn apply_anti_tamper_response_profile(
+    policy: &mut IntegrityRuntimePolicy,
+    profile: AntiTamperResponseProfile,
+) {
+    match profile {
+        AntiTamperResponseProfile::Configured => return,
+        AntiTamperResponseProfile::Balanced => {
+            clamp_runtime_thresholds(policy, 15, 35, 65, 90);
+            policy.runtime_high_risk_action = max_integrity_risk_action(
+                policy.runtime_high_risk_action,
+                IntegrityRiskAction::Warn,
+            );
+        }
+        AntiTamperResponseProfile::Strict => {
+            clamp_runtime_thresholds(policy, 10, 25, 55, 80);
+            policy.runtime_high_risk_action = max_integrity_risk_action(
+                policy.runtime_high_risk_action,
+                IntegrityRiskAction::LockStartup,
+            );
+            policy.monitoring.scan_interval_minimum_ms =
+                policy.monitoring.scan_interval_minimum_ms.min(3_000);
+            policy.monitoring.scan_interval_maximum_ms =
+                policy.monitoring.scan_interval_maximum_ms.min(10_000);
+            policy.monitoring.deep_scan_on_suspicion = true;
+        }
+        AntiTamperResponseProfile::Lockdown => {
+            clamp_runtime_thresholds(policy, 5, 15, 40, 60);
+            policy.runtime_high_risk_action = max_integrity_risk_action(
+                policy.runtime_high_risk_action,
+                IntegrityRiskAction::Terminate,
+            );
+            policy.monitoring.enabled = true;
+            policy.monitoring.scan_interval_minimum_ms =
+                policy.monitoring.scan_interval_minimum_ms.min(2_000);
+            policy.monitoring.scan_interval_maximum_ms =
+                policy.monitoring.scan_interval_maximum_ms.min(5_000);
+            policy.monitoring.deep_scan_on_suspicion = true;
+            policy.monitoring.monitor_background_state = true;
+        }
+    }
+
+    policy.startup_integrity_action = max_integrity_risk_action(
+        policy.startup_integrity_action,
+        IntegrityRiskAction::Terminate,
+    );
+    policy.startup_payload_tampering_action = max_integrity_risk_action(
+        policy.startup_payload_tampering_action,
+        IntegrityRiskAction::Terminate,
+    );
+}
+
+fn clamp_runtime_thresholds(
+    policy: &mut IntegrityRuntimePolicy,
+    report: u8,
+    warn: u8,
+    restrict: u8,
+    terminate: u8,
+) {
+    policy.thresholds.report = policy.thresholds.report.min(report);
+    policy.thresholds.warn = policy.thresholds.warn.min(warn);
+    policy.thresholds.restrict = policy.thresholds.restrict.min(restrict);
+    policy.thresholds.terminate = policy.thresholds.terminate.min(terminate);
+}
+
+fn max_integrity_risk_action(
+    current: IntegrityRiskAction,
+    minimum: IntegrityRiskAction,
+) -> IntegrityRiskAction {
+    if integrity_risk_action_rank(current) >= integrity_risk_action_rank(minimum) {
+        current
+    } else {
+        minimum
+    }
+}
+
+fn integrity_risk_action_rank(action: IntegrityRiskAction) -> u8 {
+    match action {
+        IntegrityRiskAction::Allow => 0,
+        IntegrityRiskAction::Report => 1,
+        IntegrityRiskAction::Warn => 2,
+        IntegrityRiskAction::LockStartup => 3,
+        IntegrityRiskAction::Terminate => 4,
     }
 }
 
@@ -3214,16 +3525,17 @@ mod tests {
         verify_release_provenance_command, VerifyReleaseProvenanceArgs,
     };
     use android_apk::{
-        default_runtime_policy, IntegrityAndroid, IntegrityApkInventory, IntegrityApplication,
-        IntegrityManifest, IntegrityPayload, IntegrityPolicy, IntegrityProtectedAsset,
-        IntegrityProtectedAssetKind, IntegrityProvider, IntegrityTool,
+        default_native_library_name, default_runtime_policy, IntegrityAndroid,
+        IntegrityApkInventory, IntegrityApplication, IntegrityEncryptedRuntime, IntegrityManifest,
+        IntegrityPayload, IntegrityPolicy, IntegrityProtectedAsset, IntegrityProtectedAssetKind,
+        IntegrityProvider, IntegrityRiskAction, IntegrityTool,
     };
     use artifact_inspector::{
         DexFile, FlutterInfo, InspectionResult, JavascriptBundleFormat, NativeLibrary,
         ReactNativeEngine,
     };
     use payload_pack::{build_payload_pack, PayloadPackBuildOptions, PayloadSigningKey};
-    use rasp_config::parse_config;
+    use rasp_config::{parse_config, AntiTamperResponseProfile, RiskAction};
     use rasp_core::ExitCode;
     use std::collections::BTreeMap;
     use std::fs::{self, File};
@@ -3308,6 +3620,60 @@ mod tests {
         assert_eq!(policy.detections.root.weight, 20);
         assert!(!policy.detections.emulator.enabled);
         assert_eq!(policy.detections.emulator.weight, 10);
+    }
+
+    #[test]
+    fn configured_response_profile_preserves_explicit_runtime_policy() {
+        let mut config = parse_config(include_str!("../../../fixtures/rasp.config.example.json"))
+            .expect("example config should parse");
+        config.risk_policy.runtime_high_risk = RiskAction::Report;
+        config.risk_policy.startup_payload_tampering = RiskAction::Warn;
+        config.risk_policy.startup_signature_mismatch = RiskAction::Warn;
+
+        let policy = integrity_runtime_policy(&config);
+
+        assert_eq!(policy.thresholds.report, 20);
+        assert_eq!(policy.thresholds.warn, 40);
+        assert_eq!(policy.thresholds.restrict, 70);
+        assert_eq!(policy.thresholds.terminate, 100);
+        assert_eq!(policy.runtime_high_risk_action, IntegrityRiskAction::Report);
+        assert_eq!(policy.startup_integrity_action, IntegrityRiskAction::Warn);
+        assert_eq!(
+            policy.startup_payload_tampering_action,
+            IntegrityRiskAction::Warn
+        );
+    }
+
+    #[test]
+    fn strict_response_profile_tightens_runtime_policy() {
+        let mut config = parse_config(include_str!("../../../fixtures/rasp.config.example.json"))
+            .expect("example config should parse");
+        config.hardening.anti_reverse.response_profile = AntiTamperResponseProfile::Strict;
+        config.risk_policy.runtime_high_risk = RiskAction::Report;
+        config.risk_policy.startup_payload_tampering = RiskAction::Warn;
+        config.risk_policy.startup_signature_mismatch = RiskAction::Warn;
+
+        let policy = integrity_runtime_policy(&config);
+
+        assert_eq!(policy.thresholds.report, 10);
+        assert_eq!(policy.thresholds.warn, 25);
+        assert_eq!(policy.thresholds.restrict, 55);
+        assert_eq!(policy.thresholds.terminate, 80);
+        assert_eq!(
+            policy.runtime_high_risk_action,
+            IntegrityRiskAction::LockStartup
+        );
+        assert_eq!(
+            policy.startup_integrity_action,
+            IntegrityRiskAction::Terminate
+        );
+        assert_eq!(
+            policy.startup_payload_tampering_action,
+            IntegrityRiskAction::Terminate
+        );
+        assert_eq!(policy.monitoring.scan_interval_minimum_ms, 3_000);
+        assert_eq!(policy.monitoring.scan_interval_maximum_ms, 10_000);
+        assert!(policy.monitoring.deep_scan_on_suspicion);
     }
 
     #[test]
@@ -3526,6 +3892,48 @@ mod tests {
     }
 
     #[test]
+    fn verifies_integrity_manifest_metadata_with_encrypted_runtime() {
+        let mut checks = BTreeMap::new();
+        let mut failures = Vec::new();
+        let runtime_sha256 = "3".repeat(64);
+        let mut manifest = test_integrity_manifest(
+            vec![
+                test_protected_asset(
+                    "classes2.dex",
+                    "1".repeat(64),
+                    IntegrityProtectedAssetKind::BootstrapDex,
+                ),
+                test_protected_asset(
+                    "assets/r/aaaaaaaaaaaa/d",
+                    runtime_sha256.clone(),
+                    IntegrityProtectedAssetKind::BootstrapRuntimeDex,
+                ),
+                test_protected_asset(
+                    "lib/arm64-v8a/libsecurity.so",
+                    "2".repeat(64),
+                    IntegrityProtectedAssetKind::NativeLibrary,
+                ),
+            ],
+            BTreeMap::from([
+                ("bootstrap.dex".to_string(), "1".repeat(64)),
+                ("bootstrap-runtime.dex".to_string(), runtime_sha256.clone()),
+                ("arm64-v8a/libsecurity.so".to_string(), "2".repeat(64)),
+            ]),
+        );
+        manifest.payload.encrypted_runtime = Some(IntegrityEncryptedRuntime {
+            asset_path: "r/aaaaaaaaaaaa/d".to_string(),
+            class_name: "x.raaaaaaaaaaaa.saaaaaaaaa.RsaaaaaaaaaaaaRt".to_string(),
+            sha256: runtime_sha256,
+            encryption: "XOR_SHA256_STREAM_V1".to_string(),
+        });
+
+        verify_integrity_manifest_metadata(&manifest, &mut checks, &mut failures);
+
+        assert!(failures.is_empty(), "{failures:?}");
+        assert!(checks["integrity_manifest_metadata"].starts_with("PASS"));
+    }
+
+    #[test]
     fn rejects_integrity_manifest_metadata_with_unsafe_paths_and_duplicates() {
         let mut checks = BTreeMap::new();
         let mut failures = Vec::new();
@@ -3617,6 +4025,63 @@ mod tests {
     }
 
     #[test]
+    fn verifies_encrypted_runtime_payload_binding() {
+        let root = create_temp_dir("verify-encrypted-runtime-binding");
+        let apk = root.join("shielded.apk");
+        let bootstrap = b"dex\n035\0payload";
+        let runtime = b"encrypted runtime";
+        let native = b"\x7fELFpayload";
+        create_zip_with_entries(
+            &apk,
+            &[
+                ("classes2.dex", bootstrap.to_vec()),
+                ("assets/r/aaaaaaaaaaaa/d", runtime.to_vec()),
+                ("lib/arm64-v8a/libsecurity.so", native.to_vec()),
+            ],
+        );
+
+        let mut manifest = test_integrity_manifest(
+            vec![
+                test_protected_asset(
+                    "classes2.dex",
+                    sha256_bytes(bootstrap),
+                    IntegrityProtectedAssetKind::BootstrapDex,
+                ),
+                test_protected_asset(
+                    "assets/r/aaaaaaaaaaaa/d",
+                    sha256_bytes(runtime),
+                    IntegrityProtectedAssetKind::BootstrapRuntimeDex,
+                ),
+                test_protected_asset(
+                    "lib/arm64-v8a/libsecurity.so",
+                    sha256_bytes(native),
+                    IntegrityProtectedAssetKind::NativeLibrary,
+                ),
+            ],
+            BTreeMap::from([
+                ("bootstrap.dex".to_string(), sha256_bytes(bootstrap)),
+                ("bootstrap-runtime.dex".to_string(), sha256_bytes(runtime)),
+                ("arm64-v8a/libsecurity.so".to_string(), sha256_bytes(native)),
+            ]),
+        );
+        manifest.payload.encrypted_runtime = Some(IntegrityEncryptedRuntime {
+            asset_path: "r/aaaaaaaaaaaa/d".to_string(),
+            class_name: "x.raaaaaaaaaaaa.saaaaaaaaa.RsaaaaaaaaaaaaRt".to_string(),
+            sha256: sha256_bytes(runtime),
+            encryption: "XOR_SHA256_STREAM_V1".to_string(),
+        });
+        let inspection = test_inspection_for_payload(bootstrap.len() as u64, native.len() as u64);
+        let mut checks = BTreeMap::new();
+        let mut failures = Vec::new();
+
+        verify_protected_assets(&manifest, &apk, &inspection, &mut checks, &mut failures);
+
+        assert!(failures.is_empty(), "{failures:?}");
+        assert!(checks["bootstrap_runtime_dex"].starts_with("PASS"));
+        assert!(checks["payload_digest_manifest"].starts_with("PASS"));
+    }
+
+    #[test]
     fn verifies_release_provenance_for_signed_payload_pack() {
         let release = test_payload_release("verify-release-provenance");
 
@@ -3682,8 +4147,10 @@ mod tests {
         let build_input = root.join("build-input");
         fs::create_dir_all(&build_input).expect("create build input");
         let bootstrap_dex = build_input.join("bootstrap.dex");
+        let runtime_dex = build_input.join("bootstrap-runtime.dex");
         let native_library = build_input.join("libsecurity.so");
         fs::write(&bootstrap_dex, b"dex\n035\0test bootstrap").expect("write bootstrap DEX");
+        fs::write(&runtime_dex, b"dex\n035\0test runtime").expect("write runtime DEX");
         fs::write(&native_library, b"\x7fELFtest native").expect("write native library");
 
         let signing_key_hex = "11".repeat(32);
@@ -3692,6 +4159,7 @@ mod tests {
             &PayloadPackBuildOptions {
                 output_root: root.join("payload-pack"),
                 bootstrap_dex_path: bootstrap_dex,
+                bootstrap_runtime_dex_path: Some(runtime_dex),
                 abi_libraries: BTreeMap::from([("arm64-v8a".to_string(), native_library)]),
                 payload_version: "test-payload".to_string(),
                 minimum_cli_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -3774,13 +4242,15 @@ mod tests {
                 expected_certificate_sha256: vec!["c".repeat(64)],
             },
             provider: IntegrityProvider {
-                name: "com.rasp.runtime.bootstrap.RaspInitProvider".to_string(),
-                authorities: "com.example.mobile.rasp.a91f30c2".to_string(),
+                name: "x.raaaaaaaaaaaa.saaaaaaaaa.RsaaaaaaaaaaaaPr".to_string(),
+                authorities: "com.example.mobile.paaaaaaaaaaaa".to_string(),
                 exported: false,
                 init_order: Some(1000),
             },
             payload: IntegrityPayload {
                 version: "test-payload".to_string(),
+                native_library_name: default_native_library_name(),
+                encrypted_runtime: None,
                 files: payload_files,
             },
             protected_assets,

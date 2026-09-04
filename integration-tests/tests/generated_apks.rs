@@ -5,9 +5,10 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use android_apk::{
-    default_runtime_policy, rewrite_unsigned_apk_with_payload, ApkRewriteOptions,
+    default_runtime_policy, integrity_manifest_entry_for_build_id,
+    native_library_name_for_build_id, rewrite_unsigned_apk_with_payload, ApkRewriteOptions,
     IntegrityManifest, IntegrityManifestInput, IntegrityProtectedAssetKind, IntegrityTool,
-    PayloadFiles, INTEGRITY_MANIFEST_ENTRY,
+    PayloadFiles,
 };
 use android_axml::parse_manifest;
 use artifact_inspector::{inspect_apk, ReactNativeEngine};
@@ -135,20 +136,27 @@ fn generated_apk_can_be_rewritten_with_payload() {
     );
     let bootstrap_dex = root.join("bootstrap.dex");
     let native_library = root.join("libsecurity.so");
-    fs::write(&bootstrap_dex, b"dex\n035\0payload").expect("write bootstrap");
-    fs::write(&native_library, elf_bytes("security")).expect("write native library");
+    fs::write(&bootstrap_dex, bootstrap_dex_bytes()).expect("write bootstrap");
+    fs::write(&native_library, native_payload_library_bytes()).expect("write native library");
 
     let payload = PayloadFiles {
         bootstrap_dex_path: bootstrap_dex,
+        bootstrap_runtime_dex_path: None,
         abi_libraries: BTreeMap::from([("arm64-v8a".to_string(), native_library)]),
     };
-    let report = rewrite_unsigned_apk_with_payload(&input, &output, &payload, &rewrite_options())
+    let options = rewrite_options();
+    let expected_native_library_entry = native_library_entry_for_options(&options);
+    let expected_provider_class = provider_class_for_options(&options);
+    let expected_integrity_manifest_entry =
+        integrity_manifest_entry_for_build_id(&options.build_id).expect("integrity manifest entry");
+    let expected_bootstrap_dex = patched_bootstrap_dex_bytes(&options);
+    let report = rewrite_unsigned_apk_with_payload(&input, &output, &payload, &options)
         .expect("rewrite generated APK");
 
     assert_eq!(report.inserted_dex_entry, "classes3.dex");
     assert_eq!(
         report.inserted_native_library_entries,
-        vec!["lib/arm64-v8a/libsecurity.so"]
+        vec![expected_native_library_entry.clone()]
     );
 
     let rewritten = inspect_apk(&output).expect("inspect rewritten APK");
@@ -160,19 +168,24 @@ fn generated_apk_can_be_rewritten_with_payload() {
     assert!(archive.by_name("META-INF/CERT.RSA").is_err());
     assert_eq!(
         read_zip_entry(&mut archive, "classes3.dex"),
-        b"dex\n035\0payload"
+        expected_bootstrap_dex
     );
 
     let manifest = parse_manifest(&read_zip_entry(&mut archive, "AndroidManifest.xml"))
         .expect("parse rewritten manifest");
     assert!(manifest.providers.iter().any(|provider| {
-        provider.name.as_deref() == Some("com.rasp.runtime.bootstrap.RaspInitProvider")
+        provider.name.as_deref() == Some(expected_provider_class.as_str())
             && provider.exported == Some(false)
+            && provider.meta_data.iter().any(|entry| {
+                entry.value.as_deref() == Some(manifest_asset_path_for_options(&options).as_str())
+            })
     }));
 
-    let integrity_manifest: IntegrityManifest =
-        serde_json::from_slice(&read_zip_entry(&mut archive, INTEGRITY_MANIFEST_ENTRY))
-            .expect("parse integrity manifest");
+    let integrity_manifest: IntegrityManifest = serde_json::from_slice(&read_zip_entry(
+        &mut archive,
+        &expected_integrity_manifest_entry,
+    ))
+    .expect("parse integrity manifest");
     assert!(integrity_manifest
         .protected_assets
         .iter()
@@ -193,11 +206,12 @@ fn generated_react_native_matrix_can_be_rewritten_without_device() {
     let root = create_temp_dir("react-native-rewrite-matrix");
     let bootstrap_dex = root.join("bootstrap.dex");
     let native_library = root.join("libsecurity.so");
-    fs::write(&bootstrap_dex, b"dex\n035\0payload").expect("write bootstrap");
-    fs::write(&native_library, elf_bytes("security")).expect("write native library");
+    fs::write(&bootstrap_dex, bootstrap_dex_bytes()).expect("write bootstrap");
+    fs::write(&native_library, native_payload_library_bytes()).expect("write native library");
 
     let payload = PayloadFiles {
         bootstrap_dex_path: bootstrap_dex,
+        bootstrap_runtime_dex_path: None,
         abi_libraries: BTreeMap::from([("arm64-v8a".to_string(), native_library)]),
     };
     let mut options = rewrite_options();
@@ -283,10 +297,15 @@ fn generated_react_native_matrix_can_be_rewritten_without_device() {
 
         let report = rewrite_unsigned_apk_with_payload(&input, &output, &payload, &options)
             .expect("rewrite React Native variant");
+        let expected_native_library_entry = native_library_entry_for_options(&options);
+        let expected_provider_class = provider_class_for_options(&options);
+        let expected_integrity_manifest_entry =
+            integrity_manifest_entry_for_build_id(&options.build_id)
+                .expect("integrity manifest entry");
         assert_eq!(report.inserted_dex_entry, variant.expected_inserted_dex);
         assert_eq!(
             report.inserted_native_library_entries,
-            vec!["lib/arm64-v8a/libsecurity.so"]
+            vec![expected_native_library_entry.clone()]
         );
 
         let rewritten = inspect_apk(&output).expect("inspect rewritten React Native APK");
@@ -325,7 +344,7 @@ fn generated_react_native_matrix_can_be_rewritten_without_device() {
             CompressionMethod::Deflated
         );
         assert_eq!(
-            zip_entry_compression(&mut archive, "lib/arm64-v8a/libsecurity.so"),
+            zip_entry_compression(&mut archive, &expected_native_library_entry),
             CompressionMethod::Stored
         );
         assert_eq!(
@@ -339,13 +358,19 @@ fn generated_react_native_matrix_can_be_rewritten_without_device() {
             .expect("parse rewritten manifest");
         assert_eq!(manifest.extract_native_libs, variant.extract_native_libs);
         assert!(manifest.providers.iter().any(|provider| {
-            provider.name.as_deref() == Some("com.rasp.runtime.bootstrap.RaspInitProvider")
+            provider.name.as_deref() == Some(expected_provider_class.as_str())
                 && provider.exported == Some(false)
+                && provider.meta_data.iter().any(|entry| {
+                    entry.value.as_deref()
+                        == Some(manifest_asset_path_for_options(&options).as_str())
+                })
         }));
 
-        let integrity_manifest: IntegrityManifest =
-            serde_json::from_slice(&read_zip_entry(&mut archive, INTEGRITY_MANIFEST_ENTRY))
-                .expect("parse integrity manifest");
+        let integrity_manifest: IntegrityManifest = serde_json::from_slice(&read_zip_entry(
+            &mut archive,
+            &expected_integrity_manifest_entry,
+        ))
+        .expect("parse integrity manifest");
         assert!(integrity_manifest.protected_assets.iter().any(|asset| {
             asset.path == "assets/index.android.bundle"
                 && asset.kind == IntegrityProtectedAssetKind::JavascriptBundle
@@ -439,6 +464,73 @@ fn rewrite_options() -> ApkRewriteOptions {
             },
         },
     }
+}
+
+fn native_library_entry_for_options(options: &ApkRewriteOptions) -> String {
+    let native_library_name =
+        native_library_name_for_build_id(&options.build_id).expect("native library name");
+    format!("lib/arm64-v8a/lib{native_library_name}.so")
+}
+
+fn provider_class_for_options(options: &ApkRewriteOptions) -> String {
+    android_dex::bootstrap_provider_class_for_build_id(&options.build_id).expect("provider class")
+}
+
+fn manifest_asset_path_for_options(options: &ApkRewriteOptions) -> String {
+    integrity_manifest_entry_for_build_id(&options.build_id)
+        .expect("integrity manifest entry")
+        .strip_prefix("assets/")
+        .expect("asset path")
+        .to_string()
+}
+
+fn bootstrap_dex_bytes() -> Vec<u8> {
+    let original = android_dex::BOOTSTRAP_PROVIDER_CLASS.replace('.', "/");
+    format!("payload L{}; L{}$RuntimePolicy;", original, original).into_bytes()
+}
+
+fn patched_bootstrap_dex_bytes(options: &ApkRewriteOptions) -> Vec<u8> {
+    android_dex::patch_bootstrap_provider_class(
+        &bootstrap_dex_bytes(),
+        &provider_class_for_options(options),
+    )
+    .expect("patched bootstrap dex")
+}
+
+fn native_payload_library_bytes() -> Vec<u8> {
+    let original = android_dex::BOOTSTRAP_RUNTIME_CLASS.replace('.', "/");
+    let bootstrap_methods = [
+        "nativeInitialize",
+        "nativeMonitorScan",
+        "nativeLastActionCode",
+        "nativeLastReportJson",
+    ];
+    let mut bytes = b"\x7fELFsecurity".to_vec();
+    bytes.extend_from_slice(&[0x71, 0x49, 0x5a, 0xc5, 0x2d]);
+    bytes.extend_from_slice(&[0x29, 0x73, 0x5a, 0xb6, 0x4c]);
+    bytes.extend(native_encode(original.as_bytes(), 0x5a));
+    for method in bootstrap_methods {
+        bytes.extend(native_encode(method.as_bytes(), 0x5a));
+    }
+    bytes.extend(native_encode("frida".as_bytes(), 0x5a));
+    bytes
+}
+
+fn native_encode(bytes: &[u8], key: u8) -> Vec<u8> {
+    bytes
+        .iter()
+        .enumerate()
+        .map(|(index, byte)| byte ^ native_string_mask(key, index, bytes.len()))
+        .collect()
+}
+
+fn native_string_mask(key: u8, index: usize, length: usize) -> u8 {
+    let position = (index as u8).wrapping_add(1);
+    let span = length as u8;
+    let mix = 0x9d_u8
+        .wrapping_add(position.wrapping_mul(0x3d))
+        .wrapping_add(span.wrapping_mul(0x11));
+    key ^ mix ^ position.rotate_left(3)
 }
 
 fn create_temp_dir(name: &str) -> PathBuf {

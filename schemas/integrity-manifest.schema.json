@@ -200,11 +200,38 @@
     "payload": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["version", "files"],
+      "required": ["version", "native_library_name", "files"],
       "properties": {
         "version": {
           "type": "string",
           "minLength": 1
+        },
+        "native_library_name": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$"
+        },
+        "encrypted_runtime": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["asset_path", "class_name", "sha256", "encryption"],
+          "properties": {
+            "asset_path": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 240,
+              "pattern": "^(?!assets/)(?!/)(?!.*\\\\)(?!.*(?:^|/)\\.\\.?)(?:[^/]+/)*[^/]+$"
+            },
+            "class_name": {
+              "type": "string",
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)+$"
+            },
+            "sha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "encryption": {
+              "const": "XOR_SHA256_STREAM_V1"
+            }
+          }
         },
         "files": {
           "type": "object",
@@ -233,6 +260,7 @@
           "kind": {
             "enum": [
               "BOOTSTRAP_DEX",
+              "BOOTSTRAP_RUNTIME_DEX",
               "NATIVE_LIBRARY",
               "JAVASCRIPT_BUNDLE",
               "FLUTTER_ASSET",

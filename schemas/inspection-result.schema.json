@@ -166,11 +166,15 @@
     "content_provider": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "authorities", "exported"],
+      "required": ["name", "authorities", "exported", "metadata"],
       "properties": {
         "name": { "type": ["string", "null"] },
         "authorities": { "type": ["string", "null"] },
-        "exported": { "type": ["boolean", "null"] }
+        "exported": { "type": ["boolean", "null"] },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
       }
     },
     "signature_certificate": {

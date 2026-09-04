@@ -9,6 +9,7 @@ publish.workspace = true
 [dev-dependencies]
 android-apk = { path = "../crates/android-apk" }
 android-axml = { path = "../crates/android-axml" }
+android-dex = { path = "../crates/android-dex" }
 artifact-inspector = { path = "../crates/artifact-inspector" }
 serde_json.workspace = true
 zip.workspace = true

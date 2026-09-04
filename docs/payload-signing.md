@@ -47,8 +47,9 @@ Remove temporary local copies after the secret is stored and verified.
 7. Run `rasp-cli verify-release-provenance` with the public key and expected
    release metadata before publishing release notes.
 8. Publish the payload-pack archive, archive SHA-256 sidecar, provenance JSON,
-   `manifest.json`, `signature.ed25519`, `sbom.json`, `licenses/NOTICE.txt`,
-   and public key together.
+   `manifest.json`, `signature.ed25519`, `bootstrap.dex`,
+   `bootstrap-runtime.dex`, `sbom.json`, `licenses/NOTICE.txt`, and public key
+   together.
 9. Record the workflow run ID, commit SHA, tag, payload version, public key,
    archive SHA-256, and attestation reference in the release notes.
 

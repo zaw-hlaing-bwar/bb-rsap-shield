@@ -13,8 +13,9 @@
   "expected_payload": {
     "version": "2026.08.05-dev",
     "bootstrap_dex_entry": "classes2.dex",
+    "bootstrap_runtime_dex_entry": "assets/r/aaaaaaaaaaaa/d",
     "native_library_entries": [
-      "lib/arm64-v8a/libsecurity.so"
+      "lib/arm64-v8a/librsaaaaaaaaaaaa.so"
     ]
   },
   "checks": [

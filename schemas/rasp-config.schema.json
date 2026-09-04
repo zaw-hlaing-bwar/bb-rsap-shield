@@ -143,7 +143,12 @@
           "properties": {
             "fail_on_debuggable": { "type": "boolean", "default": false },
             "fail_on_debug_metadata": { "type": "boolean", "default": false },
-            "fail_on_exposed_rasp_markers": { "type": "boolean", "default": false }
+            "fail_on_exposed_rasp_markers": { "type": "boolean", "default": false },
+            "response_profile": {
+              "type": "string",
+              "enum": ["CONFIGURED", "BALANCED", "STRICT", "LOCKDOWN"],
+              "default": "CONFIGURED"
+            }
           }
         }
       }

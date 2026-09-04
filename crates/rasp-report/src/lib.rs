@@ -57,6 +57,8 @@ pub struct ArtifactDescriptor {
 pub struct PayloadDescriptor {
     pub version: String,
     pub bootstrap_dex_entry: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bootstrap_runtime_dex_entry: Option<String>,
     pub native_library_entries: Vec<String>,
 }
 
@@ -250,6 +252,7 @@ mod tests {
         PayloadDescriptor {
             version: "dev".to_string(),
             bootstrap_dex_entry: "classes2.dex".to_string(),
+            bootstrap_runtime_dex_entry: None,
             native_library_entries: vec!["lib/arm64-v8a/libsecurity.so".to_string()],
         }
     }

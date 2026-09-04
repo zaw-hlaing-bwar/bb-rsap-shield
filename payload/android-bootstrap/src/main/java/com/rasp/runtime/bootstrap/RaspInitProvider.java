@@ -1,1094 +1,577 @@
 package com.rasp.runtime.bootstrap;
 
-import android.app.Activity;
-import android.app.Application;
+import android.content.ComponentName;
 import android.content.ContentProvider;
 import android.content.ContentValues;
 import android.content.Context;
-import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
-import android.content.pm.Signature;
+import android.content.pm.ProviderInfo;
 import android.database.Cursor;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.SystemClock;
 import android.util.Log;
+import dalvik.system.DexClassLoader;
+import dalvik.system.InMemoryDexClassLoader;
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.nio.ByteBuffer;
 import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.Enumeration;
-import java.util.List;
-import java.util.Locale;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipFile;
-import org.json.JSONArray;
 import org.json.JSONObject;
 
 public final class RaspInitProvider extends ContentProvider {
-  private static final int STRING_XOR_KEY = 0x5a;
-  private static final byte[] TAG_BYTES = new byte[] {(byte) 0x08,
-      (byte) 0x3b, (byte) 0x29, (byte) 0x2a, (byte) 0x09, (byte) 0x32,
-      (byte) 0x33, (byte) 0x3f, (byte) 0x36, (byte) 0x3e};
-  private static final byte[] INTEGRITY_MANIFEST_ASSET_BYTES = new byte[] {
-      (byte) 0x28, (byte) 0x3b, (byte) 0x29, (byte) 0x2a, (byte) 0x77,
-      (byte) 0x29, (byte) 0x32, (byte) 0x33, (byte) 0x3f, (byte) 0x36,
-      (byte) 0x3e, (byte) 0x75, (byte) 0x33, (byte) 0x34, (byte) 0x2e,
-      (byte) 0x3f, (byte) 0x3d, (byte) 0x28, (byte) 0x33, (byte) 0x2e,
-      (byte) 0x23, (byte) 0x77, (byte) 0x37, (byte) 0x3b, (byte) 0x34,
-      (byte) 0x33, (byte) 0x3c, (byte) 0x3f, (byte) 0x29, (byte) 0x2e,
-      (byte) 0x74, (byte) 0x30, (byte) 0x29, (byte) 0x35, (byte) 0x34};
-  private static final byte[] NATIVE_LIBRARY_NAME_BYTES = new byte[] {
-      (byte) 0x29, (byte) 0x3f, (byte) 0x39, (byte) 0x2f, (byte) 0x28,
-      (byte) 0x33, (byte) 0x2e, (byte) 0x23};
-  private static final byte[] MONITOR_THREAD_NAME_BYTES = new byte[] {
-      (byte) 0x08, (byte) 0x3b, (byte) 0x29, (byte) 0x2a, (byte) 0x09,
-      (byte) 0x32, (byte) 0x33, (byte) 0x3f, (byte) 0x36, (byte) 0x3e,
-      (byte) 0x17, (byte) 0x35, (byte) 0x34, (byte) 0x33, (byte) 0x2e,
-      (byte) 0x35, (byte) 0x28};
-  private static final String TAG = decodeAscii(TAG_BYTES);
-  private static final String INTEGRITY_MANIFEST_ASSET =
-      decodeAscii(INTEGRITY_MANIFEST_ASSET_BYTES);
-  private static final String NATIVE_LIBRARY_NAME =
-      decodeAscii(NATIVE_LIBRARY_NAME_BYTES);
-  private static final String MONITOR_THREAD_NAME =
-      decodeAscii(MONITOR_THREAD_NAME_BYTES);
-  private static final int ACTION_ALLOW = 0;
-  private static final int ACTION_REPORT = 1;
-  private static final int ACTION_WARN = 2;
-  private static final int ACTION_LOCK_STARTUP = 3;
-  private static final int ACTION_TERMINATE = 4;
-  private static final long MAX_STARTUP_JAVASCRIPT_HASH_BYTES = 2L * 1024L * 1024L;
-  private static final int MIN_MONITOR_INTERVAL_MS = 1000;
-  private static final int MAX_MONITOR_INTERVAL_MS = 10 * 60 * 1000;
+  static volatile byte[] K =
+      b(0x4b, 0x3f, 0x5a, 0xc8, 0x21);
+  private static final byte[] B0 =
+      b(0x84, 0xea, 0xcf, 0x31, 0x59, 0xb7, 0xf9, 0x50, 0x12, 0xc7);
+  private static final byte[] B1 = b(
+      0x0d, 0x41, 0x96, 0xee, 0x7e, 0x47, 0x91, 0xab, 0x62, 0x34, 0xe9,
+      0xd9, 0x52, 0x02, 0xd5, 0x7f, 0x48, 0x82, 0xdc, 0x3a, 0x7a, 0xe9,
+      0xe4, 0x53, 0x19, 0xc1, 0xbb, 0x43, 0x18, 0xc8, 0xdf, 0xa1, 0xed,
+      0x2e, 0x6a);
+  static final byte[] B2 = b(
+      0x24, 0x6e, 0xb8, 0xc0, 0x03, 0x7d, 0xbf, 0xf1, 0x31, 0x6f, 0xcd,
+      0xa4, 0x6c, 0x3f, 0xe3, 0x5a, 0x61, 0xae, 0xec, 0x7e);
+  private static final byte[] B3 = b(
+      0xfa, 0x3c, 0x65, 0x9b, 0xc3, 0x12, 0x42, 0xf6, 0xb5, 0x59, 0x1a,
+      0xfc, 0xa6, 0x76, 0x3d, 0x03, 0x4b, 0x99, 0xd4, 0x3a, 0x1c, 0x4e,
+      0x88, 0xba, 0x6e, 0x31, 0xe7, 0x9e, 0x51, 0x16, 0xd4, 0x37);
+  private static final byte[] B4 =
+      b(0x3c, 0x6a, 0xa7, 0xd3, 0x06);
+  private static final byte[] B5 =
+      b(0x40, 0x72, 0xa8, 0xc2, 0x14, 0x4f);
+  private static final byte[] B6 =
+      b(0x1b, 0x50, 0x88, 0xe1);
+  private static final byte[] B7 =
+      b(0xb8, 0xe6, 0x21, 0x6c, 0xb7, 0xee, 0x22, 0x0a, 0xce, 0x95, 0x5f,
+          0x2f);
+  private static final byte[] B8 =
+      b(0x75, 0xbf, 0xfd, 0x1d, 0x5c, 0x80, 0xc2, 0x50, 0x0c);
+  private static final byte[] B9 =
+      b(0xd7, 0x03, 0x76, 0xa9, 0xc3, 0x07, 0x53, 0xeb, 0xa5, 0x77, 0x0d,
+          0xc1, 0x91, 0x48, 0x16, 0xc2);
+  private static final byte[] B10 = b(
+      0x2c, 0x7f, 0xbb, 0xda, 0x06, 0x5c, 0x9d, 0xf2, 0x62, 0x26, 0x1c,
+      0xf0, 0xaa, 0x75, 0x3d, 0x0b, 0x5d, 0x8c, 0xc0);
+  private static final byte[] B11 =
+      b(0x3c, 0x6c, 0xa4, 0xca, 0xf4, 0x26, 0x6f, 0xc9, 0x85, 0x1a, 0x1d,
+          0xe5, 0xbb, 0x7a, 0x2a, 0x29, 0x6c, 0xf2, 0xf3, 0x01, 0x5a, 0x83,
+          0xd8, 0x68, 0x71, 0xe7, 0xd6, 0xb3, 0x68, 0x3f, 0xe7, 0x56, 0x90);
+  private static final byte[] B12 =
+      b(0x10, 0x50, 0x91, 0xf7, 0x3e, 0x5d, 0x83, 0xa7, 0x63, 0x78, 0xe9,
+          0x93, 0x43, 0x4c, 0xc5, 0x73, 0x5d, 0x95, 0xd6, 0x3a, 0x6c, 0xb6,
+          0xf0, 0x12, 0x02, 0xc6, 0xbc, 0x50, 0x0a, 0xd5, 0x9d, 0xaa, 0xfc,
+          0x2d, 0x61);
+  private static final byte[] B13 =
+      b(0xdf, 0x09, 0x59, 0xfa, 0xcc, 0x11, 0x56, 0xe6, 0xa6, 0x24, 0x2d,
+          0xdb, 0x85, 0x4d, 0x7e, 0xd2, 0x04, 0x4e, 0x88, 0xaa, 0x2a, 0x6e,
+          0xa4, 0x88, 0x52, 0x3d, 0xf5, 0x83, 0x45, 0x14, 0xc8);
+  private static final byte[] B14 =
+      b(0x37, 0x6d, 0xb2, 0xd8, 0x1e, 0x3e, 0x7c, 0x8d, 0x87, 0x48, 0x1f,
+          0xf4, 0xae, 0x2f, 0x30, 0x24, 0x7a, 0xbb);
+  private static final byte[] B15 =
+      b(0x94, 0xda, 0x1f, 0x61, 0xda, 0xfc, 0x08, 0x4c, 0x0b, 0xdf, 0x90,
+          0x29, 0x2e, 0xe8, 0xab, 0x96, 0xd3, 0x0f, 0x3c, 0x92, 0xde, 0x1e,
+          0x42, 0xe1, 0xab, 0x73);
+  private static final byte[] B16 = b(
+      0xe3, 0x31, 0x64, 0x90, 0xd9, 0x11, 0x4d, 0xed, 0xab, 0xd7, 0x55,
+      0x2c, 0xe8, 0xb2, 0x6a, 0xd4, 0x09, 0x5b, 0xc0, 0xd0, 0x00, 0x52,
+      0x82, 0xa8, 0x6b, 0x2b, 0xe9, 0x9f, 0x5a, 0x0e);
+  private static final byte[] B17 =
+      b(0x2b, 0x7d, 0xb7, 0xdb, 0x1b, 0x57, 0x9c, 0xb8, 0x72, 0x6b, 0x0e,
+          0xf4, 0xa4, 0x6b, 0x39, 0x18, 0x5b, 0xc3, 0xc9, 0x3c, 0x66, 0x96,
+          0xdc, 0x6c, 0x32, 0xfa, 0xec, 0x58, 0x14, 0xd9, 0x81, 0x48, 0x86,
+          0xd6);
+  private static final byte[] B18 = b(0xdc, 0x00);
+  private static final byte[] B19 = b(0xd6);
+  private static final byte[] B20 = b(0x62, 0x75, 0xbf, 0xd7);
+  private static final byte[] B21 =
+      b(0x50, 0x8c, 0xc8, 0x5f, 0x05, 0xdd, 0xeb);
+  private static final byte[] B22 =
+      b(0x28, 0x72, 0xad, 0xb1, 0x69);
+  private static final byte[] B23 = b(
+      0xda, 0x06, 0x56, 0xba, 0xe9, 0x33, 0x7b, 0xe3, 0x93, 0x5f, 0x3b,
+      0xc7, 0x80, 0x4a, 0x2c, 0x39, 0x6a);
+  private static final byte[] B24 = b(
+      0xdb, 0x09, 0x57, 0xb9, 0xe8, 0x34, 0x7a, 0xe0, 0x80, 0x74, 0x27,
+      0xcf, 0x8b, 0x58, 0x16, 0x08, 0x6c, 0xac, 0xeb, 0x0b, 0x29, 0x63,
+      0xb3, 0x81, 0x47, 0x3a, 0xcf, 0xb0, 0x60, 0x20, 0xed, 0x68);
+  private static final byte[] B25 =
+      b(0x62, 0x58, 0x94, 0xe4, 0x25, 0x62);
+  private static final byte[] B26 =
+      b(0x71, 0xb1, 0xe7, 0x06, 0x5e, 0x85, 0xb8);
+  static final byte[] B27 =
+      b(0x73, 0xa5, 0xf0, 0x1e, 0x58, 0x89, 0xb9);
+  static final byte[] B28 = b(
+      0xcc, 0x1c, 0x54, 0xba, 0xe4, 0x36, 0x7f, 0xd9, 0x95, 0x75, 0x2d,
+      0xd5, 0x8b, 0x4a, 0x1a, 0x39, 0x7c);
+  private static final byte[] B29 =
+      b(0x52, 0xa0, 0xf7, 0x0f, 0x40, 0xa6, 0xdb, 0x73);
+  static final byte[] B30 =
+      b(0xb7, 0xf8, 0xcf, 0x24, 0x7e, 0x80, 0xe0, 0x54, 0x0a, 0xcb);
+  static final byte[] B31 =
+      b(0xb5, 0xe7, 0xdd, 0x32, 0x79, 0x80, 0xfe, 0x54, 0x13, 0xc6);
+  static final byte[] B32 =
+      b(0x61, 0x5f, 0x99, 0xbf, 0x73, 0x2d);
+  static final byte[] B33 =
+      b(0xb3, 0xe5, 0xdf, 0x33, 0x73, 0xaf, 0xe4, 0x5c, 0x11, 0xcd);
+  private static final byte[] B34 = b(
+      0x0f, 0x55, 0x8b, 0xed, 0x24, 0x40, 0x8e, 0x9c, 0x60, 0x2c, 0xe0,
+      0x96, 0x4c, 0x04, 0xc9, 0x75, 0x73, 0x9c, 0xc9, 0x72);
+  private static final byte[] B35 = b(
+      0x6f, 0x63, 0xa1, 0xcf, 0x11, 0x50, 0x9c, 0xa2, 0x48, 0x2a, 0x08,
+      0xe2, 0xac, 0x79, 0x25, 0x35, 0x52, 0x93, 0x98);
+  private static final byte[] B36 = b(
+      0xf1, 0xf9, 0xcb, 0x21, 0x77, 0xaa, 0xe6, 0x44, 0x26, 0xc0, 0x92,
+      0x7c, 0x0a, 0xd3, 0x8f, 0x93, 0xe4, 0x22, 0x6c, 0x95, 0xd0, 0x0a,
+      0x46, 0x00, 0x94);
+  private static final byte[] B37 = b(
+      0xc5, 0xd7, 0x1d, 0x7d, 0xad, 0xeb, 0x26, 0x14, 0xe4, 0xac, 0x7e,
+      0x08, 0x9c);
+  private static final byte[] B38 =
+      b(0x10, 0xb4, 0xfd, 0x17, 0x4d, 0x96, 0xdc, 0x2a);
+  private static final String S0 = s(B0);
+  private static final String S1 =
+      s(B1);
+  private static final String S2 =
+      s(B4);
+  private static final String S3 =
+      s(B5);
+  private static final String S4 =
+      s(B6);
+  private static final String S5 =
+      s(B7);
+  private static final String S6 =
+      s(B8);
+  private static final String S7 =
+      s(B10);
+  private static final String S8 =
+      s(B11);
+  private static final String S9 =
+      s(B12);
+  private static final String S10 =
+      s(B13);
+  private static final String S11 =
+      s(B14);
+  private static final String S12 =
+      s(B15);
+  static final String S13 =
+      s(B16);
+  static final String S14 =
+      s(B17);
+  private static final String S15 = s(B18);
+  private static final String S16 = s(B19);
+  private static final String S17 = s(B20);
+  private static final String S18 = s(B21);
+  private static final String S19 = s(B22);
+  static final String S20 = s(B29);
+  private static final String S21 =
+      s(B34);
+  private static final String S22 =
+      s(B35);
+  private static final String S23 =
+      s(B36);
+  private static final String S24 = s(B37);
+  private static final String S25 = s(B38);
+  private static final int C0 = 0;
+  private static final int C1 = 1;
+  private static final int C2 = 2;
+  private static final int C3 = 3;
+  private static final int C4 = 4;
 
-  private static volatile boolean nativeLibraryLoaded;
-  private static volatile boolean initialized;
-  private static volatile boolean monitorStarted;
-  private static volatile boolean lifecycleRegistered;
-  private static volatile int activeActivities;
-  private static volatile int lastRiskScore;
-  private static volatile int lastAction = ACTION_ALLOW;
-  private static volatile String lastActionName = "ALLOW";
-  private static volatile String lastReportJson = "{}";
-  private static volatile long lastStartupDurationMs;
-  private static volatile boolean lastStartupBudgetExceeded;
-
-  static {
-    try {
-      System.loadLibrary(NATIVE_LIBRARY_NAME);
-      nativeLibraryLoaded = true;
-    } catch (Throwable ignored) {
-      nativeLibraryLoaded = false;
+  private static byte[] b(int... values) {
+    byte[] output = new byte[values.length];
+    for (int i = 0; i < values.length; i++) {
+      output[i] = (byte) values[i];
     }
+    return output;
   }
 
-  private static String decodeAscii(byte[] encoded) {
+  private static String s(byte[] encoded) {
+    return s(encoded, k0());
+  }
+
+  static String s(byte[] encoded, int key) {
     char[] decoded = new char[encoded.length];
+    int normalizedKey = key & 0xff;
     for (int i = 0; i < encoded.length; i++) {
-      decoded[i] = (char) (((int) encoded[i] & 0xff) ^ STRING_XOR_KEY);
+      decoded[i] = (char) (((int) encoded[i] & 0xff)
+          ^ m(normalizedKey, i, encoded.length));
     }
     return new String(decoded);
   }
 
-  private static native int nativeInitialize(Context context, int reportThreshold,
-      int warnThreshold, int restrictThreshold, int terminateThreshold,
-      String runtimeHighRiskAction, String startupIntegrityAction,
-      String startupPayloadTamperingAction, int packageMatches,
-      int certificateMatches, int payloadMatches, int protectedAssetsMatch,
-      int debuggerDetectionEnabled, int debuggerDetectionWeight,
-      int instrumentationDetectionEnabled, int instrumentationDetectionWeight,
-      int memoryIntegrityEnabled, int memoryIntegrityWeight,
-      int rootDetectionEnabled, int rootDetectionWeight,
-      int emulatorDetectionEnabled, int emulatorDetectionWeight);
-
-  private static native int nativeMonitorScan(int reportThreshold,
-      int warnThreshold, int restrictThreshold, int terminateThreshold,
-      String runtimeHighRiskAction, String startupPayloadTamperingAction,
-      int protectedAssetsMatch, int debuggerDetectionEnabled,
-      int debuggerDetectionWeight, int instrumentationDetectionEnabled,
-      int instrumentationDetectionWeight, int memoryIntegrityEnabled,
-      int memoryIntegrityWeight, int rootDetectionEnabled, int rootDetectionWeight,
-      int emulatorDetectionEnabled, int emulatorDetectionWeight);
-
-  private static native int nativeLastActionCode();
-
-  private static native String nativeLastReportJson();
-
-  public static boolean isInitialized() {
-    return initialized;
+  private static int k0() {
+    return K[2] & 0xff;
   }
 
-  public static int getLastRiskScore() {
-    return lastRiskScore;
+  static int k1(String buildId) {
+    int sourceKey = k0();
+    if (!vh(buildId)) {
+      return sourceKey;
+    }
+    int key = ((x(buildId.charAt(4)) << 4)
+        | x(buildId.charAt(5))) ^ 0x9e;
+    int[] tweaks = new int[] {0x73, 0xb5, 0x2d, 0xe1};
+    for (int i = 0; i < tweaks.length; i++) {
+      if (key != 0 && key != sourceKey) {
+        return key & 0xff;
+      }
+      key ^= tweaks[i];
+    }
+    return key == 0 || key == sourceKey ? ((sourceKey ^ 0xa5) & 0xff) : key & 0xff;
   }
 
-  public static int getLastAction() {
-    return lastAction;
+  private static int k2(String manifestBody) {
+    if (manifestBody == null || manifestBody.length() == 0) {
+      return k0();
+    }
+    try {
+      JSONObject root = new JSONObject(manifestBody);
+      return k1(root.optString(S20, ""));
+    } catch (Throwable ignored) {
+      return k0();
+    }
   }
 
-  public static String getLastActionName() {
-    return lastActionName;
+  private static int x(char ch) {
+    if (ch >= '0' && ch <= '9') {
+      return ch - '0';
+    }
+    if (ch >= 'a' && ch <= 'f') {
+      return ch - 'a' + 10;
+    }
+    if (ch >= 'A' && ch <= 'F') {
+      return ch - 'A' + 10;
+    }
+    return 0;
   }
 
-  public static String getLastReportJson() {
-    return lastReportJson;
-  }
-
-  public static long getLastStartupDurationMs() {
-    return lastStartupDurationMs;
-  }
-
-  public static boolean isLastStartupBudgetExceeded() {
-    return lastStartupBudgetExceeded;
+  private static int m(int key, int index, int length) {
+    int position = (index + 1) & 0xff;
+    int span = length & 0xff;
+    int mix = (0x9d + ((position * 0x3d) & 0xff) + ((span * 0x11) & 0xff))
+        & 0xff;
+    int rotated = ((position << 3) | (position >>> 5)) & 0xff;
+    return key ^ mix ^ rotated;
   }
 
   @Override
   public boolean onCreate() {
     long startupStartNs = SystemClock.elapsedRealtimeNanos();
-    RuntimePolicy policyForMonitor = RuntimePolicy.defaults();
-    if (!nativeLibraryLoaded) {
-      recordStartupTiming(startupStartNs, policyForMonitor, false, ACTION_ALLOW);
-      return true;
-    }
-
-    int actionToApply = ACTION_ALLOW;
+    String manifestBody = null;
     try {
       Context context = getContext();
       Context applicationContext =
           context == null ? null : context.getApplicationContext();
-      RuntimePolicy policy = RuntimePolicy.load(applicationContext);
-      policyForMonitor = policy;
-      boolean packageMatches = policy.packageMatches(applicationContext);
-      boolean certificateMatches = policy.certificateMatches(applicationContext);
-      boolean payloadMatches = policy.payloadAssetsMatch(applicationContext);
-      boolean protectedAssetsMatch =
-          policy.smallProtectedAssetsMatch(applicationContext);
-      lastRiskScore = nativeInitialize(applicationContext, policy.reportThreshold,
-          policy.warnThreshold, policy.restrictThreshold, policy.terminateThreshold,
-          policy.runtimeHighRiskAction, policy.startupIntegrityAction,
-          policy.startupPayloadTamperingAction, packageMatches ? 1 : 0,
-          certificateMatches ? 1 : 0, payloadMatches ? 1 : 0,
-          protectedAssetsMatch ? 1 : 0,
-          policy.debuggerDetectionEnabled ? 1 : 0,
-          policy.debuggerDetectionWeight,
-          policy.instrumentationDetectionEnabled ? 1 : 0,
-          policy.instrumentationDetectionWeight,
-          policy.memoryIntegrityEnabled ? 1 : 0, policy.memoryIntegrityWeight,
-          policy.rootDetectionEnabled ? 1 : 0,
-          policy.rootDetectionWeight, policy.emulatorDetectionEnabled ? 1 : 0,
-          policy.emulatorDetectionWeight);
-      refreshLastNativeReport();
-      actionToApply = lastAction;
-      initialized = true;
-    } catch (Throwable ignored) {
-      initialized = false;
+      manifestBody = r(applicationContext);
+      D descriptor = D.g(manifestBody);
+      byte[] encryptedRuntime = ab(applicationContext, descriptor.c);
+      if (!sx(encryptedRuntime).equalsIgnoreCase(descriptor.e)) {
+        throw new IllegalStateException(S8);
+      }
+      byte[] runtimeDex = c(encryptedRuntime, descriptor);
+      ClassLoader classLoader = l(applicationContext, runtimeDex);
+      Class<?> entryClass = classLoader.loadClass(descriptor.d);
+      Method entrypoint =
+          entryClass.getMethod(s(B9,
+                  descriptor.b),
+              Context.class, String.class);
+      entrypoint.invoke(null, applicationContext, manifestBody);
+      return true;
+    } catch (InvocationTargetException error) {
+      Throwable cause = error.getCause();
+      if (cause instanceof RuntimeException) {
+        throw (RuntimeException) cause;
+      }
+      if (cause instanceof Error) {
+        throw (Error) cause;
+      }
+      return f(startupStartNs, manifestBody);
+    } catch (Throwable error) {
+      return f(startupStartNs, manifestBody);
     }
+  }
 
-    recordStartupTiming(startupStartNs, policyForMonitor, initialized, actionToApply);
-    applyAction(actionToApply);
-    if (initialized && policyForMonitor != null) {
-      startMonitoring(applicationContext(), policyForMonitor);
-    }
+  private static boolean f(long startupStartNs, String manifestBody) {
+    int action = pa(manifestBody);
+    tm(startupStartNs, bm(manifestBody), false, action);
+    ap(action);
     return true;
   }
 
-  private static void recordStartupTiming(long startupStartNs, RuntimePolicy policy,
-      boolean startupInitialized, int action) {
-    long elapsedNs = SystemClock.elapsedRealtimeNanos() - startupStartNs;
-    long durationMs = Math.max(0L, elapsedNs / 1000000L);
-    if (elapsedNs > 0L && elapsedNs % 1000000L != 0L) {
-      durationMs++;
-    }
-
-    int budgetMs = policy == null
-        ? RuntimePolicy.defaults().startupBudgetMs
-        : policy.startupBudgetMs;
-    boolean budgetExceeded = durationMs > budgetMs;
-    lastStartupDurationMs = durationMs;
-    lastStartupBudgetExceeded = budgetExceeded;
-
-    String message = "startup_duration_ms=" + durationMs
-        + " startup_budget_ms=" + budgetMs
-        + " startup_budget_exceeded=" + budgetExceeded
-        + " initialized=" + startupInitialized
-        + " action=" + actionName(action);
-    if (budgetExceeded) {
-      Log.w(TAG, message);
-    } else {
-      Log.i(TAG, message);
-    }
-  }
-
-  private Context applicationContext() {
-    Context context = getContext();
-    return context == null ? null : context.getApplicationContext();
-  }
-
-  private static void applyAction(int action) {
-    if (action == ACTION_LOCK_STARTUP) {
-      throw new IllegalStateException("RASP Shield locked startup");
-    }
-    if (action == ACTION_TERMINATE) {
-      android.os.Process.killProcess(android.os.Process.myPid());
-      System.exit(10);
-    }
-  }
-
-  private static void applyRuntimeAction(int action) {
-    if (action == ACTION_TERMINATE || action == ACTION_LOCK_STARTUP) {
-      android.os.Process.killProcess(android.os.Process.myPid());
-      System.exit(10);
-    }
-  }
-
-  private static void refreshLastNativeReport() {
-    lastAction = nativeLastActionCode();
-    lastActionName = actionName(lastAction);
-    String report = nativeLastReportJson();
-    if (report != null) {
-      lastReportJson = report;
-    }
-  }
-
-  private static void startMonitoring(Context context, final RuntimePolicy policy) {
-    if (policy == null || !policy.monitoringEnabled) {
-      return;
-    }
-
-    synchronized (RaspInitProvider.class) {
-      if (monitorStarted) {
-        return;
-      }
-      monitorStarted = true;
-    }
-
-    registerLifecycleCallbacks(context);
-    Thread monitor = new Thread(new Runnable() {
-      @Override
-      public void run() {
-        runMonitorLoop(context, policy);
-      }
-    }, MONITOR_THREAD_NAME);
-    monitor.setDaemon(true);
-    monitor.start();
-  }
-
-  private static void runMonitorLoop(Context context, RuntimePolicy policy) {
-    while (true) {
-      if (!sleepQuietly(policy.nextScanDelayMs())) {
-        return;
-      }
-      if (!shouldMonitorNow(policy)) {
-        continue;
-      }
-
-      int actionToApply = ACTION_ALLOW;
-      try {
-        boolean protectedAssetsMatch =
-            policy.nextRuntimeProtectedAssetMatches(context);
-        lastRiskScore = nativeMonitorScan(policy.reportThreshold,
-            policy.warnThreshold, policy.restrictThreshold, policy.terminateThreshold,
-            policy.runtimeHighRiskAction, policy.startupPayloadTamperingAction,
-            protectedAssetsMatch ? 1 : 0,
-            policy.debuggerDetectionEnabled ? 1 : 0,
-            policy.debuggerDetectionWeight,
-            policy.instrumentationDetectionEnabled ? 1 : 0,
-            policy.instrumentationDetectionWeight,
-            policy.memoryIntegrityEnabled ? 1 : 0, policy.memoryIntegrityWeight,
-            policy.rootDetectionEnabled ? 1 : 0,
-            policy.rootDetectionWeight, policy.emulatorDetectionEnabled ? 1 : 0,
-            policy.emulatorDetectionWeight);
-        refreshLastNativeReport();
-        actionToApply = lastAction;
-
-        if (policy.deepScanOnSuspicion && actionToApply != ACTION_ALLOW) {
-          boolean deepProtectedAssetsMatch = protectedAssetsMatch
-              && policy.allRuntimeProtectedAssetsMatch(context);
-          lastRiskScore = nativeMonitorScan(policy.reportThreshold,
-              policy.warnThreshold, policy.restrictThreshold,
-              policy.terminateThreshold, policy.runtimeHighRiskAction,
-              policy.startupPayloadTamperingAction,
-              deepProtectedAssetsMatch ? 1 : 0,
-              policy.debuggerDetectionEnabled ? 1 : 0,
-              policy.debuggerDetectionWeight,
-              policy.instrumentationDetectionEnabled ? 1 : 0,
-              policy.instrumentationDetectionWeight,
-              policy.memoryIntegrityEnabled ? 1 : 0, policy.memoryIntegrityWeight,
-              policy.rootDetectionEnabled ? 1 : 0, policy.rootDetectionWeight,
-              policy.emulatorDetectionEnabled ? 1 : 0,
-              policy.emulatorDetectionWeight);
-          refreshLastNativeReport();
-          actionToApply = lastAction;
-        }
-      } catch (Throwable ignored) {
-        actionToApply = ACTION_ALLOW;
-      }
-
-      applyRuntimeAction(actionToApply);
-    }
-  }
-
-  private static void registerLifecycleCallbacks(Context context) {
-    if (lifecycleRegistered || !(context instanceof Application)) {
-      return;
-    }
-
-    synchronized (RaspInitProvider.class) {
-      if (lifecycleRegistered || !(context instanceof Application)) {
-        return;
-      }
-      ((Application) context).registerActivityLifecycleCallbacks(
-          new Application.ActivityLifecycleCallbacks() {
-            @Override
-            public void onActivityCreated(Activity activity, Bundle savedInstanceState) {
-            }
-
-            @Override
-            public void onActivityStarted(Activity activity) {
-              activeActivities++;
-            }
-
-            @Override
-            public void onActivityResumed(Activity activity) {
-            }
-
-            @Override
-            public void onActivityPaused(Activity activity) {
-            }
-
-            @Override
-            public void onActivityStopped(Activity activity) {
-              if (activeActivities > 0) {
-                activeActivities--;
-              }
-            }
-
-            @Override
-            public void onActivitySaveInstanceState(Activity activity, Bundle outState) {
-            }
-
-            @Override
-            public void onActivityDestroyed(Activity activity) {
-            }
-          });
-      lifecycleRegistered = true;
-    }
-  }
-
-  private static boolean shouldMonitorNow(RuntimePolicy policy) {
-    return policy.monitorBackgroundState || !lifecycleRegistered || activeActivities > 0;
-  }
-
-  private static boolean sleepQuietly(int delayMs) {
-    try {
-      Thread.sleep(delayMs);
-      return true;
-    } catch (InterruptedException ignored) {
-      Thread.currentThread().interrupt();
-      return false;
-    }
-  }
-
-  private static String actionName(int action) {
-    switch (action) {
-      case ACTION_REPORT:
-        return "REPORT";
-      case ACTION_WARN:
-        return "WARN";
-      case ACTION_LOCK_STARTUP:
-        return "LOCK_STARTUP";
-      case ACTION_TERMINATE:
-        return "TERMINATE";
-      case ACTION_ALLOW:
-      default:
-        return "ALLOW";
-    }
-  }
-
-  private static final class RuntimePolicy {
-    private final int reportThreshold;
-    private final int warnThreshold;
-    private final int restrictThreshold;
-    private final int terminateThreshold;
-    private final int startupBudgetMs;
-    private final String runtimeHighRiskAction;
-    private final String startupIntegrityAction;
-    private final String startupPayloadTamperingAction;
-    private final boolean monitoringEnabled;
-    private final int scanIntervalMinimumMs;
-    private final int scanIntervalMaximumMs;
-    private final boolean deepScanOnSuspicion;
-    private final boolean monitorBackgroundState;
-    private final boolean debuggerDetectionEnabled;
-    private final int debuggerDetectionWeight;
-    private final boolean instrumentationDetectionEnabled;
-    private final int instrumentationDetectionWeight;
-    private final boolean memoryIntegrityEnabled;
-    private final int memoryIntegrityWeight;
-    private final boolean rootDetectionEnabled;
-    private final int rootDetectionWeight;
-    private final boolean emulatorDetectionEnabled;
-    private final int emulatorDetectionWeight;
-    private final String expectedPackageName;
-    private final List<String> expectedCertificateSha256;
-    private final List<ProtectedAsset> protectedAssets;
-    private final int expectedEntryCount;
-    private final String expectedEntrySetSha256;
-    private final int expectedExecutableEntryCount;
-    private final String expectedExecutableEntrySetSha256;
-    private final boolean manifestLoaded;
-    private int nextRuntimeProtectedAssetIndex;
-
-    private RuntimePolicy(int reportThreshold, int warnThreshold,
-        int restrictThreshold, int terminateThreshold, int startupBudgetMs,
-        String runtimeHighRiskAction, String startupIntegrityAction,
-        String startupPayloadTamperingAction, boolean monitoringEnabled,
-        int scanIntervalMinimumMs,
-        int scanIntervalMaximumMs, boolean deepScanOnSuspicion,
-        boolean monitorBackgroundState, boolean debuggerDetectionEnabled,
-        int debuggerDetectionWeight, boolean instrumentationDetectionEnabled,
-        int instrumentationDetectionWeight, boolean memoryIntegrityEnabled,
-        int memoryIntegrityWeight, boolean rootDetectionEnabled,
-        int rootDetectionWeight, boolean emulatorDetectionEnabled,
-        int emulatorDetectionWeight,
-        String expectedPackageName, List<String> expectedCertificateSha256,
-        List<ProtectedAsset> protectedAssets, int expectedEntryCount,
-        String expectedEntrySetSha256, int expectedExecutableEntryCount,
-        String expectedExecutableEntrySetSha256, boolean manifestLoaded) {
-      this.reportThreshold = reportThreshold;
-      this.warnThreshold = warnThreshold;
-      this.restrictThreshold = restrictThreshold;
-      this.terminateThreshold = terminateThreshold;
-      this.startupBudgetMs = startupBudgetMs;
-      this.runtimeHighRiskAction = runtimeHighRiskAction;
-      this.startupIntegrityAction = startupIntegrityAction;
-      this.startupPayloadTamperingAction = startupPayloadTamperingAction;
-      this.monitoringEnabled = monitoringEnabled;
-      this.scanIntervalMinimumMs = clampInterval(scanIntervalMinimumMs);
-      this.scanIntervalMaximumMs = clampInterval(scanIntervalMaximumMs);
-      this.deepScanOnSuspicion = deepScanOnSuspicion;
-      this.monitorBackgroundState = monitorBackgroundState;
-      this.debuggerDetectionEnabled = debuggerDetectionEnabled;
-      this.debuggerDetectionWeight = debuggerDetectionWeight;
-      this.instrumentationDetectionEnabled = instrumentationDetectionEnabled;
-      this.instrumentationDetectionWeight = instrumentationDetectionWeight;
-      this.memoryIntegrityEnabled = memoryIntegrityEnabled;
-      this.memoryIntegrityWeight = memoryIntegrityWeight;
-      this.rootDetectionEnabled = rootDetectionEnabled;
-      this.rootDetectionWeight = rootDetectionWeight;
-      this.emulatorDetectionEnabled = emulatorDetectionEnabled;
-      this.emulatorDetectionWeight = emulatorDetectionWeight;
-      this.expectedPackageName = expectedPackageName;
-      this.expectedCertificateSha256 = expectedCertificateSha256;
-      this.protectedAssets = protectedAssets;
-      this.expectedEntryCount = expectedEntryCount;
-      this.expectedEntrySetSha256 = expectedEntrySetSha256;
-      this.expectedExecutableEntryCount = expectedExecutableEntryCount;
-      this.expectedExecutableEntrySetSha256 = expectedExecutableEntrySetSha256;
-      this.manifestLoaded = manifestLoaded;
-    }
-
-    private static RuntimePolicy defaults() {
-      return new RuntimePolicy(20, 40, 70, 100, 50, "REPORT", "TERMINATE",
-          "TERMINATE", true, 5000, 15000, true, false, true, 40, true, 60,
-          true, 60, true, 20, false, 10, "", new ArrayList<String>(),
-          new ArrayList<ProtectedAsset>(), 0, "", 0, "", false);
-    }
-
-    private static RuntimePolicy load(Context context) {
-      if (context == null) {
-        return defaults();
-      }
-
-      try {
-        JSONObject root = new JSONObject(readAsset(context, INTEGRITY_MANIFEST_ASSET));
-        JSONObject application = root.optJSONObject("application");
-        JSONObject android = root.optJSONObject("android");
-        JSONObject policy = root.optJSONObject("policy");
-        JSONObject runtime = policy == null ? null : policy.optJSONObject("runtime");
-        JSONObject monitoring = runtime == null ? null : runtime.optJSONObject("monitoring");
-        JSONObject detections = runtime == null ? null : runtime.optJSONObject("detections");
-        JSONObject apkInventory = root.optJSONObject("apk_inventory");
-        JSONArray protectedAssets = root.optJSONArray("protected_assets");
-        JSONObject thresholds =
-            runtime == null ? null : runtime.optJSONObject("thresholds");
-        RuntimePolicy defaults = defaults();
-        RuntimePolicy parsed = new RuntimePolicy(
-            optRiskScore(thresholds, "report", defaults.reportThreshold),
-            optRiskScore(thresholds, "warn", defaults.warnThreshold),
-            optRiskScore(thresholds, "restrict", defaults.restrictThreshold),
-            optRiskScore(thresholds, "terminate", defaults.terminateThreshold),
-            runtime == null
-                ? defaults.startupBudgetMs
-                : runtime.optInt("startup_budget_ms", defaults.startupBudgetMs),
-            runtime == null
-                ? defaults.runtimeHighRiskAction
-                : runtime.optString("runtime_high_risk_action",
-                    defaults.runtimeHighRiskAction),
-            runtime == null
-                ? defaults.startupIntegrityAction
-                : runtime.optString("startup_integrity_action",
-                    defaults.startupIntegrityAction),
-            runtime == null
-                ? defaults.startupPayloadTamperingAction
-                : runtime.optString("startup_payload_tampering_action",
-                    defaults.startupPayloadTamperingAction),
-            monitoring == null
-                ? defaults.monitoringEnabled
-                : monitoring.optBoolean("enabled", defaults.monitoringEnabled),
-            monitoring == null
-                ? defaults.scanIntervalMinimumMs
-                : monitoring.optInt("scan_interval_minimum_ms",
-                    defaults.scanIntervalMinimumMs),
-            monitoring == null
-                ? defaults.scanIntervalMaximumMs
-                : monitoring.optInt("scan_interval_maximum_ms",
-                    defaults.scanIntervalMaximumMs),
-            monitoring == null
-                ? defaults.deepScanOnSuspicion
-                : monitoring.optBoolean("deep_scan_on_suspicion",
-                    defaults.deepScanOnSuspicion),
-            monitoring == null
-                ? defaults.monitorBackgroundState
-                : monitoring.optBoolean("monitor_background_state",
-                    defaults.monitorBackgroundState),
-            optDetectionEnabled(detections, "debugger",
-                defaults.debuggerDetectionEnabled),
-            optDetectionWeight(detections, "debugger",
-                defaults.debuggerDetectionWeight),
-            optDetectionEnabled(detections, "instrumentation",
-                defaults.instrumentationDetectionEnabled),
-            optDetectionWeight(detections, "instrumentation",
-                defaults.instrumentationDetectionWeight),
-            optDetectionEnabled(detections, "memory",
-                defaults.memoryIntegrityEnabled),
-            optDetectionWeight(detections, "memory",
-                defaults.memoryIntegrityWeight),
-            optDetectionEnabled(detections, "root",
-                defaults.rootDetectionEnabled),
-            optDetectionWeight(detections, "root", defaults.rootDetectionWeight),
-            optDetectionEnabled(detections, "emulator",
-                defaults.emulatorDetectionEnabled),
-            optDetectionWeight(detections, "emulator",
-                defaults.emulatorDetectionWeight),
-            application == null
-                ? ""
-                : application.optString("expected_package_name", ""),
-            expectedCertificates(android),
-            protectedAssets(protectedAssets),
-            apkInventory == null ? 0 : apkInventory.optInt("entry_count", 0),
-            apkInventory == null
-                ? ""
-                : apkInventory.optString("entry_set_sha256", ""),
-            apkInventory == null
-                ? 0
-                : apkInventory.optInt("executable_entry_count", 0),
-            apkInventory == null
-                ? ""
-                : apkInventory.optString("executable_entry_set_sha256", ""),
-            true);
-        return parsed.isValid() ? parsed : defaults;
-      } catch (Throwable ignored) {
-        return defaults();
-      }
-    }
-
-    private boolean isValid() {
-      return reportThreshold >= 0
-          && reportThreshold < warnThreshold
-          && warnThreshold < restrictThreshold
-          && restrictThreshold <= terminateThreshold
-          && terminateThreshold <= 100
-          && startupBudgetMs > 0
-          && debuggerDetectionWeight >= 0
-          && debuggerDetectionWeight <= 100
-          && instrumentationDetectionWeight >= 0
-          && instrumentationDetectionWeight <= 100
-          && memoryIntegrityWeight >= 0
-          && memoryIntegrityWeight <= 100
-          && rootDetectionWeight >= 0
-          && rootDetectionWeight <= 100
-          && emulatorDetectionWeight >= 0
-          && emulatorDetectionWeight <= 100
-          && scanIntervalMinimumMs <= scanIntervalMaximumMs
-          && expectedPackageName.length() > 0
-          && !expectedCertificateSha256.isEmpty()
-          && !protectedAssets.isEmpty();
-    }
-
-    private int nextScanDelayMs() {
-      if (scanIntervalMaximumMs <= scanIntervalMinimumMs) {
-        return scanIntervalMinimumMs;
-      }
-      int spread = scanIntervalMaximumMs - scanIntervalMinimumMs;
-      return scanIntervalMinimumMs + (int) (Math.random() * (spread + 1L));
-    }
-
-    private static int clampInterval(int value) {
-      if (value < MIN_MONITOR_INTERVAL_MS) {
-        return MIN_MONITOR_INTERVAL_MS;
-      }
-      if (value > MAX_MONITOR_INTERVAL_MS) {
-        return MAX_MONITOR_INTERVAL_MS;
-      }
-      return value;
-    }
-
-    private static int optRiskScore(JSONObject object, String name, int fallback) {
-      if (object == null) {
-        return fallback;
-      }
-      int value = object.optInt(name, fallback);
-      return value >= 0 && value <= 100 ? value : fallback;
-    }
-
-    private static boolean optDetectionEnabled(JSONObject detections, String name,
-        boolean fallback) {
-      JSONObject detection =
-          detections == null ? null : detections.optJSONObject(name);
-      return detection == null ? fallback : detection.optBoolean("enabled", fallback);
-    }
-
-    private static int optDetectionWeight(JSONObject detections, String name,
-        int fallback) {
-      JSONObject detection =
-          detections == null ? null : detections.optJSONObject(name);
-      if (detection == null) {
-        return fallback;
-      }
-      int value = detection.optInt("weight", fallback);
-      return value >= 0 && value <= 100 ? value : fallback;
-    }
-
-    private boolean packageMatches(Context context) {
-      return manifestLoaded
-          && context != null
-          && expectedPackageName.equals(context.getPackageName());
-    }
-
-    private boolean certificateMatches(Context context) {
-      if (!manifestLoaded || context == null || expectedCertificateSha256.isEmpty()) {
-        return false;
-      }
-
-      try {
-        List<String> actualDigests = currentCertificateSha256(context);
-        for (int i = 0; i < actualDigests.size(); i++) {
-          String actual = actualDigests.get(i);
-          for (int j = 0; j < expectedCertificateSha256.size(); j++) {
-            if (actual.equalsIgnoreCase(expectedCertificateSha256.get(j))) {
-              return true;
-            }
-          }
-        }
-      } catch (Throwable ignored) {
-        return false;
-      }
-
-      return false;
-    }
-
-    private boolean payloadAssetsMatch(Context context) {
-      return verifyAssets(context, false, true) && apkInventoryMatches(context);
-    }
-
-    private boolean smallProtectedAssetsMatch(Context context) {
-      return verifyAssets(context, true, false);
-    }
-
-    private boolean nextRuntimeProtectedAssetMatches(Context context) {
-      if (!manifestLoaded || context == null || protectedAssets.isEmpty()) {
-        return false;
-      }
-
-      String sourceDir = sourceApkPath(context);
-      if (sourceDir == null) {
-        return false;
-      }
-
-      ZipFile apk = null;
-      try {
-        apk = new ZipFile(sourceDir);
-        int assetCount = protectedAssets.size();
-        for (int checked = 0; checked < assetCount; checked++) {
-          int index = nextRuntimeProtectedAssetIndex % assetCount;
-          nextRuntimeProtectedAssetIndex = (index + 1) % assetCount;
-          ProtectedAsset asset = protectedAssets.get(index);
-          if (!asset.isRuntimeDeferredAsset()) {
-            continue;
-          }
-          return protectedAssetMatches(apk, asset, false);
-        }
-        return true;
-      } catch (Throwable ignored) {
-        return false;
-      } finally {
-        closeQuietly(apk);
-      }
-    }
-
-    private boolean allRuntimeProtectedAssetsMatch(Context context) {
-      if (!manifestLoaded || context == null || protectedAssets.isEmpty()) {
-        return false;
-      }
-
-      String sourceDir = sourceApkPath(context);
-      if (sourceDir == null) {
-        return false;
-      }
-
-      boolean checkedAny = false;
-      ZipFile apk = null;
-      try {
-        apk = new ZipFile(sourceDir);
-        for (int i = 0; i < protectedAssets.size(); i++) {
-          ProtectedAsset asset = protectedAssets.get(i);
-          if (!asset.isRuntimeDeferredAsset()) {
-            continue;
-          }
-          checkedAny = true;
-          if (!protectedAssetMatches(apk, asset, false)) {
-            return false;
-          }
-        }
-      } catch (Throwable ignored) {
-        return false;
-      } finally {
-        closeQuietly(apk);
-      }
-
-      return true;
-    }
-
-    private boolean verifyAssets(Context context, boolean javascriptOnly,
-        boolean payloadOnly) {
-      if (!manifestLoaded || context == null || protectedAssets.isEmpty()) {
-        return false;
-      }
-
-      String sourceDir = sourceApkPath(context);
-      if (sourceDir == null) {
-        return false;
-      }
-
-      boolean checkedAny = false;
-      ZipFile apk = null;
-      try {
-        apk = new ZipFile(sourceDir);
-        for (int i = 0; i < protectedAssets.size(); i++) {
-          ProtectedAsset asset = protectedAssets.get(i);
-          boolean isJavascript = asset.isJavascriptBundle();
-          if (javascriptOnly != isJavascript) {
-            continue;
-          }
-          if (payloadOnly
-              && !("BOOTSTRAP_DEX".equals(asset.kind)
-                  || "NATIVE_LIBRARY".equals(asset.kind))) {
-            continue;
-          }
-
-          checkedAny = true;
-          if (!protectedAssetMatches(apk, asset, isJavascript)) {
-            return false;
-          }
-        }
-      } catch (Throwable ignored) {
-        return false;
-      } finally {
-        closeQuietly(apk);
-      }
-
-      return payloadOnly ? checkedAny : true;
-    }
-
-    private boolean apkInventoryMatches(Context context) {
-      if (expectedEntryCount == 0
-          && expectedEntrySetSha256.length() == 0
-          && expectedExecutableEntryCount == 0
-          && expectedExecutableEntrySetSha256.length() == 0) {
-        return true;
-      }
-      if (expectedEntrySetSha256.length() != 64
-          || expectedExecutableEntrySetSha256.length() != 64) {
-        return false;
-      }
-
-      String sourceDir = sourceApkPath(context);
-      if (sourceDir == null) {
-        return false;
-      }
-
-      ZipFile apk = null;
-      try {
-        apk = new ZipFile(sourceDir);
-        ApkInventory actual = apkInventory(apk);
-        return actual.entryCount == expectedEntryCount
-            && actual.executableEntryCount == expectedExecutableEntryCount
-            && actual.entrySetSha256.equalsIgnoreCase(expectedEntrySetSha256)
-            && actual.executableEntrySetSha256.equalsIgnoreCase(
-                expectedExecutableEntrySetSha256);
-      } catch (Throwable ignored) {
-        return false;
-      } finally {
-        closeQuietly(apk);
-      }
-    }
-
-    private static ApkInventory apkInventory(ZipFile apk) throws Exception {
-      ArrayList<String> entries = new ArrayList<String>();
-      Enumeration<? extends ZipEntry> zipEntries = apk.entries();
-      while (zipEntries.hasMoreElements()) {
-        ZipEntry entry = zipEntries.nextElement();
-        String name = entry.getName();
-        if (entry.isDirectory() || isJarSignatureMetadataEntry(name)) {
-          continue;
-        }
-        entries.add(name);
-      }
-      Collections.sort(entries);
-
-      ArrayList<String> executableEntries = new ArrayList<String>();
-      for (int i = 0; i < entries.size(); i++) {
-        String entry = entries.get(i);
-        if (isExecutableInventoryEntry(entry)) {
-          executableEntries.add(entry);
-        }
-      }
-
-      return new ApkInventory(entries.size(), pathSetSha256(entries),
-          executableEntries.size(), pathSetSha256(executableEntries));
-    }
-
-    private static String pathSetSha256(List<String> paths) throws Exception {
-      MessageDigest digest = MessageDigest.getInstance("SHA-256");
-      for (int i = 0; i < paths.size(); i++) {
-        digest.update(paths.get(i).getBytes("UTF-8"));
-        digest.update((byte) 0);
-      }
-      return hex(digest.digest());
-    }
-
-    private static boolean isExecutableInventoryEntry(String path) {
-      return isDexEntryPath(path)
-          || isNativeLibraryEntry(path)
-          || path.endsWith(".dex")
-          || path.endsWith(".jar")
-          || path.endsWith(".apk")
-          || path.endsWith(".so");
-    }
-
-    private static boolean isDexEntryPath(String path) {
-      if ("classes.dex".equals(path)) {
-        return true;
-      }
-      if (!path.startsWith("classes") || !path.endsWith(".dex")) {
-        return false;
-      }
-      String value = path.substring("classes".length(), path.length() - ".dex".length());
-      if (value.length() == 0) {
-        return false;
-      }
-      for (int i = 0; i < value.length(); i++) {
-        char ch = value.charAt(i);
-        if (ch < '0' || ch > '9') {
-          return false;
-        }
-      }
-      return true;
-    }
-
-    private static boolean isNativeLibraryEntry(String path) {
-      if (!path.startsWith("lib/") || !path.endsWith(".so")) {
-        return false;
-      }
-      int slash = path.indexOf('/', 4);
-      return slash > 4 && slash == path.lastIndexOf('/');
-    }
-
-    private static boolean isJarSignatureMetadataEntry(String path) {
-      String upper = path.toUpperCase(Locale.US);
-      return "META-INF/MANIFEST.MF".equals(upper)
-          || upper.startsWith("META-INF/")
-              && (upper.endsWith(".RSA")
-                  || upper.endsWith(".DSA")
-                  || upper.endsWith(".EC")
-                  || upper.endsWith(".SF"));
-    }
-
-    private static String sourceApkPath(Context context) {
-      String sourceDir = context.getApplicationInfo() == null
-          ? null
-          : context.getApplicationInfo().sourceDir;
-      return sourceDir == null || sourceDir.length() == 0 ? null : sourceDir;
-    }
-
-    private static boolean protectedAssetMatches(ZipFile apk,
-        ProtectedAsset asset, boolean enforceStartupJavascriptBudget)
-        throws Exception {
-      ZipEntry entry = apk.getEntry(asset.path);
-      if (entry == null) {
-        return false;
-      }
-      if (enforceStartupJavascriptBudget
-          && entry.getSize() > MAX_STARTUP_JAVASCRIPT_HASH_BYTES) {
-        return true;
-      }
-
-      String actual = zipEntrySha256(apk, entry);
-      return actual.equalsIgnoreCase(asset.sha256);
-    }
-
-    private static void closeQuietly(ZipFile zipFile) {
-      if (zipFile != null) {
-        try {
-          zipFile.close();
-        } catch (Throwable ignored) {
-        }
-      }
-    }
-
-    private static List<String> expectedCertificates(JSONObject android) {
-      ArrayList<String> digests = new ArrayList<String>();
-      if (android == null) {
-        return digests;
-      }
-
-      JSONArray values = android.optJSONArray("expected_certificate_sha256");
-      if (values == null) {
-        return digests;
-      }
-
-      for (int i = 0; i < values.length(); i++) {
-        String value = values.optString(i, "");
-        if (value.length() == 64) {
-          digests.add(value.toLowerCase(Locale.US));
-        }
-      }
-      return digests;
-    }
-
-    private static List<ProtectedAsset> protectedAssets(JSONArray values) {
-      ArrayList<ProtectedAsset> assets = new ArrayList<ProtectedAsset>();
-      if (values == null) {
-        return assets;
-      }
-
-      for (int i = 0; i < values.length(); i++) {
-        JSONObject value = values.optJSONObject(i);
-        if (value == null) {
-          continue;
-        }
-        String path = value.optString("path", "");
-        String sha256 = value.optString("sha256", "");
-        String kind = value.optString("kind", "");
-        if (path.length() > 0 && sha256.length() == 64 && kind.length() > 0) {
-          assets.add(new ProtectedAsset(path, sha256.toLowerCase(Locale.US), kind));
-        }
-      }
-
-      return assets;
-    }
-  }
-
-  private static final class ProtectedAsset {
-    private final String path;
-    private final String sha256;
-    private final String kind;
-
-    private ProtectedAsset(String path, String sha256, String kind) {
-      this.path = path;
-      this.sha256 = sha256;
-      this.kind = kind;
-    }
-
-    private boolean isJavascriptBundle() {
-      return "JAVASCRIPT_BUNDLE".equals(kind);
-    }
-
-    private boolean isFlutterAsset() {
-      return "FLUTTER_ASSET".equals(kind);
-    }
-
-    private boolean isFlutterNativeLibrary() {
-      return "FLUTTER_NATIVE_LIBRARY".equals(kind);
-    }
-
-    private boolean isRuntimeDeferredAsset() {
-      return isJavascriptBundle() || isFlutterAsset() || isFlutterNativeLibrary();
-    }
-  }
-
-  private static final class ApkInventory {
-    private final int entryCount;
-    private final String entrySetSha256;
-    private final int executableEntryCount;
-    private final String executableEntrySetSha256;
-
-    private ApkInventory(int entryCount, String entrySetSha256,
-        int executableEntryCount, String executableEntrySetSha256) {
-      this.entryCount = entryCount;
-      this.entrySetSha256 = entrySetSha256;
-      this.executableEntryCount = executableEntryCount;
-      this.executableEntrySetSha256 = executableEntrySetSha256;
-    }
-  }
-
-  @SuppressWarnings("deprecation")
-  private static List<String> currentCertificateSha256(Context context) throws Exception {
-    PackageManager packageManager = context.getPackageManager();
-    String packageName = context.getPackageName();
-    ArrayList<String> digests = new ArrayList<String>();
-    Signature[] signatures;
-
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-      PackageInfo packageInfo = packageManager.getPackageInfo(
-          packageName, PackageManager.GET_SIGNING_CERTIFICATES);
-      if (packageInfo.signingInfo == null) {
-        return digests;
-      }
-      signatures = packageInfo.signingInfo.getApkContentsSigners();
-    } else {
-      PackageInfo packageInfo =
-          packageManager.getPackageInfo(packageName, PackageManager.GET_SIGNATURES);
-      signatures = packageInfo.signatures;
-    }
-
-    if (signatures == null) {
-      return digests;
-    }
-
-    for (int i = 0; i < signatures.length; i++) {
-      digests.add(sha256Hex(signatures[i].toByteArray()));
-    }
-
-    return digests;
-  }
-
-  private static String zipEntrySha256(ZipFile zipFile, ZipEntry entry)
+  private static ClassLoader l(Context context, byte[] dexBytes)
       throws Exception {
-    InputStream input = zipFile.getInputStream(entry);
+    if (context == null) {
+      throw new IllegalStateException(S7);
+    }
+    ClassLoader parent = RaspInitProvider.class.getClassLoader();
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+      return new InMemoryDexClassLoader(ByteBuffer.wrap(dexBytes), parent);
+    }
+
+    File root = new File(context.getCodeCacheDir(), S15);
+    File optimized = new File(root, S16);
+    if (!optimized.mkdirs() && !optimized.isDirectory()) {
+      throw new IllegalStateException(S9);
+    }
+    File dexFile = new File(root, sx(dexBytes) + S17);
+    w(dexFile, dexBytes);
+    return new DexClassLoader(
+        dexFile.getAbsolutePath(), optimized.getAbsolutePath(), null, parent);
+  }
+
+  private static void w(File file, byte[] bytes) throws Exception {
+    if (file.isFile() && file.length() == bytes.length) {
+      return;
+    }
+    File parent = file.getParentFile();
+    if (parent != null && !parent.mkdirs() && !parent.isDirectory()) {
+      throw new IllegalStateException(S10);
+    }
+    FileOutputStream output = new FileOutputStream(file);
     try {
-      MessageDigest digest = MessageDigest.getInstance("SHA-256");
+      output.write(bytes);
+    } finally {
+      output.close();
+    }
+  }
+
+  private static byte[] c(byte[] input, D descriptor)
+      throws Exception {
+    byte[] seed = sd(descriptor);
+    byte[] output = new byte[input.length];
+    int offset = 0;
+    int counter = 0;
+    while (offset < input.length) {
+      byte[] block = kb(seed, counter);
+      for (int i = 0; i < block.length && offset < input.length; i++) {
+        output[offset] = (byte) (input[offset] ^ block[i]);
+        offset++;
+      }
+      counter++;
+    }
+    return output;
+  }
+
+  private static byte[] sd(D descriptor) throws Exception {
+    MessageDigest digest = MessageDigest.getInstance(S18);
+    digest.update(s(B3, descriptor.b)
+        .getBytes(S19));
+    digest.update((byte) 0);
+    digest.update(descriptor.a.getBytes(S19));
+    digest.update((byte) 0);
+    digest.update(descriptor.c.getBytes(S19));
+    digest.update((byte) 0);
+    digest.update(descriptor.d.getBytes(S19));
+    return digest.digest();
+  }
+
+  private static byte[] kb(byte[] seed, int counter) throws Exception {
+    MessageDigest digest = MessageDigest.getInstance(S18);
+    digest.update(seed);
+    digest.update((byte) ((counter >>> 24) & 0xff));
+    digest.update((byte) ((counter >>> 16) & 0xff));
+    digest.update((byte) ((counter >>> 8) & 0xff));
+    digest.update((byte) (counter & 0xff));
+    return digest.digest();
+  }
+
+  private static String r(Context context) {
+    ArrayList<String> candidates = ca(context);
+    for (int i = 0; i < candidates.size(); i++) {
+      String candidate = candidates.get(i);
+      try {
+        return ra(context, candidate);
+      } catch (Throwable ignored) {
+      }
+    }
+    return null;
+  }
+
+  private static ArrayList<String> ca(Context context) {
+    ArrayList<String> candidates = new ArrayList<String>();
+    acm(candidates, pm(context));
+    acm(candidates, S1);
+    return candidates;
+  }
+
+  private static String pm(Context context) {
+    if (context == null) {
+      return null;
+    }
+    try {
+      PackageManager packageManager = context.getPackageManager();
+      ProviderInfo providerInfo = packageManager.getProviderInfo(
+          new ComponentName(context, RaspInitProvider.class),
+          PackageManager.GET_META_DATA);
+      Bundle metadata = providerInfo == null ? null : providerInfo.metaData;
+      if (metadata == null || metadata.isEmpty()) {
+        return null;
+      }
+      ArrayList<String> keys = new ArrayList<String>(metadata.keySet());
+      Collections.sort(keys);
+      for (int i = 0; i < keys.size(); i++) {
+        Object value = metadata.get(keys.get(i));
+        if (value instanceof String) {
+          String assetPath = (String) value;
+          if (vp(assetPath)) {
+            return assetPath;
+          }
+        }
+      }
+    } catch (Throwable ignored) {
+    }
+    return null;
+  }
+
+  private static void acm(ArrayList<String> candidates,
+      String assetPath) {
+    if (!vp(assetPath) || candidates.contains(assetPath)) {
+      return;
+    }
+    candidates.add(assetPath);
+  }
+
+  private static String ra(Context context, String assetPath)
+      throws Exception {
+    return new String(ab(context, assetPath), S19);
+  }
+
+  private static byte[] ab(Context context, String assetPath)
+      throws Exception {
+    if (context == null || !vp(assetPath)) {
+      throw new IllegalStateException(S11);
+    }
+    InputStream input = context.getAssets().open(assetPath);
+    try {
+      ByteArrayOutputStream output = new ByteArrayOutputStream();
       byte[] buffer = new byte[8192];
       int bytesRead;
       while ((bytesRead = input.read(buffer)) != -1) {
-        digest.update(buffer, 0, bytesRead);
+        output.write(buffer, 0, bytesRead);
       }
-      return hex(digest.digest());
+      return output.toByteArray();
     } finally {
       input.close();
     }
   }
 
-  private static String sha256Hex(byte[] value) throws Exception {
-    MessageDigest digest = MessageDigest.getInstance("SHA-256");
-    return hex(digest.digest(value));
+  private static int bm(String manifestBody) {
+    try {
+      int key = k2(manifestBody);
+      JSONObject runtime = rp(manifestBody);
+      int value = runtime == null
+          ? 50
+          : runtime.optInt(s(B23, key), 50);
+      return value > 0 ? value : 50;
+    } catch (Throwable ignored) {
+      return 50;
+    }
   }
 
-  private static String hex(byte[] hash) {
+  private static int pa(String manifestBody) {
+    try {
+      int key = k2(manifestBody);
+      JSONObject runtime = rp(manifestBody);
+      String action = runtime == null
+          ? S6
+          : runtime.optString(
+              s(B24, key),
+              S6);
+      return ai(action);
+    } catch (Throwable ignored) {
+      return C4;
+    }
+  }
+
+  private static JSONObject rp(String manifestBody) throws Exception {
+    if (manifestBody == null || manifestBody.length() == 0) {
+      return null;
+    }
+    int key = k2(manifestBody);
+    JSONObject root = new JSONObject(manifestBody);
+    JSONObject policy = root.optJSONObject(s(B25, key));
+    return policy == null
+        ? null
+        : policy.optJSONObject(s(B26, key));
+  }
+
+  private static void tm(long startupStartNs, int budgetMs,
+      boolean initialized, int action) {
+    long elapsedNs = SystemClock.elapsedRealtimeNanos() - startupStartNs;
+    long durationMs = Math.max(0L, elapsedNs / 1000000L);
+    if (elapsedNs > 0L && elapsedNs % 1000000L != 0L) {
+      durationMs++;
+    }
+    boolean budgetExceeded = durationMs > budgetMs;
+    String message = S21 + durationMs
+        + S22 + budgetMs
+        + S23 + budgetExceeded
+        + S24 + initialized
+        + S25 + an(action);
+    if (budgetExceeded) {
+      Log.w(S0, message);
+    } else {
+      Log.i(S0, message);
+    }
+  }
+
+  private static void ap(int action) {
+    if (action == C3) {
+      throw new IllegalStateException(S12);
+    }
+    if (action == C4) {
+      android.os.Process.killProcess(android.os.Process.myPid());
+      System.exit(10);
+    }
+  }
+
+  private static int ai(String action) {
+    if (S3.equals(action)) {
+      return C1;
+    }
+    if (S4.equals(action)) {
+      return C2;
+    }
+    if (S5.equals(action)) {
+      return C3;
+    }
+    if (S6.equals(action)) {
+      return C4;
+    }
+    return C0;
+  }
+
+  private static String an(int action) {
+    switch (action) {
+      case C1:
+        return S3;
+      case C2:
+        return S4;
+      case C3:
+        return S5;
+      case C4:
+        return S6;
+      case C0:
+      default:
+        return S2;
+    }
+  }
+
+  private static String sx(byte[] value) throws Exception {
+    MessageDigest digest = MessageDigest.getInstance(S18);
+    return h(digest.digest(value));
+  }
+
+  private static String h(byte[] hash) {
     StringBuilder output = new StringBuilder(hash.length * 2);
     for (int i = 0; i < hash.length; i++) {
       int current = hash[i] & 0xff;
@@ -1100,18 +583,118 @@ public final class RaspInitProvider extends ContentProvider {
     return output.toString();
   }
 
-  private static String readAsset(Context context, String assetPath) throws Exception {
-    InputStream input = context.getAssets().open(assetPath);
-    try {
-      ByteArrayOutputStream output = new ByteArrayOutputStream();
-      byte[] buffer = new byte[1024];
-      int bytesRead;
-      while ((bytesRead = input.read(buffer)) != -1) {
-        output.write(buffer, 0, bytesRead);
+  static boolean vp(String assetPath) {
+    if (assetPath == null || assetPath.length() == 0
+        || assetPath.length() > 240 || assetPath.startsWith("/")
+        || assetPath.startsWith("\\") || assetPath.indexOf('\\') >= 0) {
+      return false;
+    }
+    String[] segments = assetPath.split("/");
+    for (int i = 0; i < segments.length; i++) {
+      String segment = segments[i];
+      if (segment.length() == 0 || ".".equals(segment) || "..".equals(segment)) {
+        return false;
       }
-      return output.toString("UTF-8");
-    } finally {
-      input.close();
+    }
+    return true;
+  }
+
+  static boolean vc(String value) {
+    if (value == null || value.length() == 0) {
+      return false;
+    }
+    String[] segments = value.split("\\.");
+    if (segments.length < 2) {
+      return false;
+    }
+    for (int i = 0; i < segments.length; i++) {
+      if (!vi(segments[i])) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private static boolean vi(String value) {
+    if (value == null || value.length() == 0) {
+      return false;
+    }
+    char first = value.charAt(0);
+    if (!(first == '_' || first >= 'A' && first <= 'Z'
+        || first >= 'a' && first <= 'z')) {
+      return false;
+    }
+    for (int i = 1; i < value.length(); i++) {
+      char ch = value.charAt(i);
+      if (!(ch == '_' || ch >= 'A' && ch <= 'Z'
+          || ch >= 'a' && ch <= 'z' || ch >= '0' && ch <= '9')) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  static boolean vh(String value) {
+    if (value == null || value.length() != 64) {
+      return false;
+    }
+    for (int i = 0; i < value.length(); i++) {
+      char ch = value.charAt(i);
+      if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f')
+          || (ch >= 'A' && ch <= 'F'))) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  static final class D {
+    final String a;
+    final int b;
+    final String c;
+    final String d;
+    final String e;
+
+    D(String buildId, int stringXorKey, String assetPath,
+        String className, String sha256) {
+      this.a = buildId;
+      this.b = stringXorKey;
+      this.c = assetPath;
+      this.d = className;
+      this.e = sha256;
+    }
+
+    static D g(String manifestBody)
+        throws Exception {
+      if (manifestBody == null || manifestBody.length() == 0) {
+        throw new IllegalStateException(S13);
+      }
+      JSONObject root = new JSONObject(manifestBody);
+      String buildId = root.optString(S20, "");
+      int key = k1(buildId);
+      JSONObject payload = root.optJSONObject(s(B27, key));
+      JSONObject runtime = payload == null
+          ? null
+          : payload.optJSONObject(s(B28, key));
+      String assetPath = runtime == null
+          ? ""
+          : runtime.optString(s(B30, key), "");
+      String className = runtime == null
+          ? ""
+          : runtime.optString(s(B31, key), "");
+      String sha256 = runtime == null
+          ? ""
+          : runtime.optString(s(B32, key), "");
+      String encryption = runtime == null
+          ? ""
+          : runtime.optString(s(B33, key), "");
+      if (!vh(buildId) || !vp(assetPath)
+          || !vc(className) || !vh(sha256)
+          || !s(B2, key).equals(encryption)) {
+        throw new IllegalStateException(S14);
+      }
+      return new D(
+          buildId.toLowerCase(), key, assetPath, className, sha256.toLowerCase());
     }
   }
 

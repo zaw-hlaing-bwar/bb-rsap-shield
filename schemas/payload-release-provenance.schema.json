@@ -69,7 +69,12 @@
         "notice_sha256": { "$ref": "#/$defs/sha256" },
         "files": {
           "type": "object",
-          "required": ["bootstrap.dex", "sbom.json", "licenses/NOTICE.txt"],
+          "required": [
+            "bootstrap.dex",
+            "bootstrap-runtime.dex",
+            "sbom.json",
+            "licenses/NOTICE.txt"
+          ],
           "additionalProperties": { "$ref": "#/$defs/sha256" }
         }
       }

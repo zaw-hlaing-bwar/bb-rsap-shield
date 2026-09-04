@@ -11,8 +11,9 @@ Current coverage:
 - React Native JSC inspection.
 - Multidex ordering.
 - Flutter library and asset inspection.
-- Unsigned APK rewrite with bootstrap DEX, native payload, manifest provider,
-  integrity manifest, and signature metadata stripping.
+- Unsigned APK rewrite with bootstrap loader DEX, optional encrypted runtime
+  DEX asset, native payload, manifest provider, integrity manifest, and
+  signature metadata stripping.
 - Fail-closed handling for missing manifests and ZIP-slip paths.
 
 Future device-backed tests should cover alignment, signing, installation, and

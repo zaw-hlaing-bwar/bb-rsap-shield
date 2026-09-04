@@ -22,6 +22,8 @@ const RES_XML_END_ELEMENT_TYPE: u16 = 0x0103;
 const UTF8_FLAG: u32 = 0x0000_0100;
 const NO_INDEX: u32 = 0xffff_ffff;
 const TYPE_STRING: u8 = 0x03;
+const BOOTSTRAP_PROVIDER_CLASS: &str = "com.rasp.runtime.bootstrap.RaspInitProvider";
+const BOOTSTRAP_RUNTIME_CLASS: &str = "com.rasp.runtime.bootstrap.RaspRuntimeEntry";
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -86,12 +88,10 @@ pub fn provider_from_data(data: &[u8], package_name: &str) -> ManifestProvider {
 
     ManifestProvider {
         name: class_name,
-        authorities: format!(
-            "{package_name}.rasp.{}",
-            identifier_fragment(data, "authority")
-        ),
+        authorities: format!("{package_name}.p{}", identifier_fragment(data, "authority")),
         exported,
         init_order,
+        meta_data: Vec::new(),
     }
 }
 
@@ -181,13 +181,55 @@ pub fn write_payload_files(root: &Path) -> io::Result<PayloadFiles> {
     let bootstrap_dex_path = root.join("bootstrap.dex");
     let native_library_path = root.join("libsecurity.so");
 
-    fs::write(&bootstrap_dex_path, b"dex\n035\0fuzz bootstrap")?;
-    fs::write(&native_library_path, b"\x7fELFfuzz native library")?;
+    fs::write(&bootstrap_dex_path, bootstrap_dex_bytes())?;
+    fs::write(&native_library_path, native_payload_library_bytes())?;
 
     Ok(PayloadFiles {
         bootstrap_dex_path,
+        bootstrap_runtime_dex_path: None,
         abi_libraries: BTreeMap::from([("arm64-v8a".to_string(), native_library_path)]),
     })
+}
+
+fn bootstrap_dex_bytes() -> Vec<u8> {
+    let original = BOOTSTRAP_PROVIDER_CLASS.replace('.', "/");
+    format!("payload L{}; L{}$RuntimePolicy;", original, original).into_bytes()
+}
+
+fn native_payload_library_bytes() -> Vec<u8> {
+    let original = BOOTSTRAP_RUNTIME_CLASS.replace('.', "/");
+    let bootstrap_methods = [
+        "nativeInitialize",
+        "nativeMonitorScan",
+        "nativeLastActionCode",
+        "nativeLastReportJson",
+    ];
+    let mut bytes = b"\x7fELFfuzz native library".to_vec();
+    bytes.extend_from_slice(&[0x71, 0x49, 0x5a, 0xc5, 0x2d]);
+    bytes.extend_from_slice(&[0x29, 0x73, 0x5a, 0xb6, 0x4c]);
+    bytes.extend(native_encode(original.as_bytes(), 0x5a));
+    for method in bootstrap_methods {
+        bytes.extend(native_encode(method.as_bytes(), 0x5a));
+    }
+    bytes.extend(native_encode("frida".as_bytes(), 0x5a));
+    bytes
+}
+
+fn native_encode(bytes: &[u8], key: u8) -> Vec<u8> {
+    bytes
+        .iter()
+        .enumerate()
+        .map(|(index, byte)| byte ^ native_string_mask(key, index, bytes.len()))
+        .collect()
+}
+
+fn native_string_mask(key: u8, index: usize, length: usize) -> u8 {
+    let position = (index as u8).wrapping_add(1);
+    let span = length as u8;
+    let mix = 0x9d_u8
+        .wrapping_add(position.wrapping_mul(0x3d))
+        .wrapping_add(span.wrapping_mul(0x11));
+    key ^ mix ^ position.rotate_left(3)
 }
 
 pub fn rewrite_options(expected_package_name: &str) -> ApkRewriteOptions {

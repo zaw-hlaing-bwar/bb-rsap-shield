@@ -8,6 +8,7 @@
   ],
   "files": {
     "bootstrap.dex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "bootstrap-runtime.dex": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
     "arm64-v8a/libsecurity.so": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     "sbom.json": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
     "licenses/NOTICE.txt": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"

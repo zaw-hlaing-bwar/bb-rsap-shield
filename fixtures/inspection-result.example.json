@@ -21,9 +21,9 @@
   ],
   "native_libraries": [
     {
-      "path": "lib/arm64-v8a/libsecurity.so",
+      "path": "lib/arm64-v8a/librsaaaaaaaaaaaa.so",
       "abi": "arm64-v8a",
-      "name": "libsecurity.so",
+      "name": "librsaaaaaaaaaaaa.so",
       "size_bytes": 2048,
       "compressed": false
     }
@@ -38,9 +38,12 @@
   "main_activity": "com.example.MainActivity",
   "content_providers": [
     {
-      "name": "com.example.rasp.RaspInitProvider",
-      "authorities": "com.example.mobile.raspinit",
-      "exported": false
+      "name": "x.raaaaaaaaaaaa.saaaaaaaaa.RsaaaaaaaaaaaaPr",
+      "authorities": "com.example.mobile.paaaaaaaaaaaa",
+      "exported": false,
+      "metadata": {
+        "raaaaaaaaaaaa": "r/aaaaaaaaaaaa/m"
+      }
     }
   ],
   "detected_signature_schemes": [
@@ -67,13 +70,8 @@
     "zip_slip_paths": [],
     "total_uncompressed_bytes": 8192
   },
-  "existing_security_products": [
-    "RASP Shield"
-  ],
-  "exposed_rasp_markers": [
-    "entry:assets/rasp-shield/integrity-manifest.json",
-    "entry:lib/arm64-v8a/libsecurity.so"
-  ],
+  "existing_security_products": [],
+  "exposed_rasp_markers": [],
   "debug_metadata_entries": [],
   "compatibility_warnings": [],
   "warnings": []

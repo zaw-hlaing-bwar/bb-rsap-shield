@@ -12,6 +12,7 @@ from hashlib import sha256
 
 REQUIRED_PAYLOAD_FILES = {
     "bootstrap.dex",
+    "bootstrap-runtime.dex",
     "sbom.json",
     "licenses/NOTICE.txt",
 }

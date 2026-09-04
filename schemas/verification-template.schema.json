@@ -67,6 +67,7 @@
       "properties": {
         "version": { "type": "string" },
         "bootstrap_dex_entry": { "type": "string" },
+        "bootstrap_runtime_dex_entry": { "type": ["string", "null"] },
         "native_library_entries": {
           "type": "array",
           "items": { "type": "string" }

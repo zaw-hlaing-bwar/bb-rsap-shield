@@ -77,7 +77,8 @@
     "anti_reverse": {
       "fail_on_debuggable": false,
       "fail_on_debug_metadata": false,
-      "fail_on_exposed_rasp_markers": false
+      "fail_on_exposed_rasp_markers": false,
+      "response_profile": "CONFIGURED"
     }
   },
   "android": {

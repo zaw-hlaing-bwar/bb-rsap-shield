@@ -11,6 +11,7 @@ pub const PAYLOAD_MANIFEST_SCHEMA_VERSION: u32 = 1;
 pub const PAYLOAD_MANIFEST_FILE: &str = "manifest.json";
 pub const PAYLOAD_SIGNATURE_FILE: &str = "signature.ed25519";
 pub const BOOTSTRAP_DEX_FILE: &str = "bootstrap.dex";
+pub const BOOTSTRAP_RUNTIME_DEX_FILE: &str = "bootstrap-runtime.dex";
 pub const SECURITY_LIBRARY_NAME: &str = "libsecurity.so";
 pub const PAYLOAD_SBOM_FILE: &str = "sbom.json";
 pub const PAYLOAD_LICENSE_NOTICE_FILE: &str = "licenses/NOTICE.txt";
@@ -90,6 +91,7 @@ pub struct PayloadPack {
     pub manifest: PayloadManifest,
     pub signature_path: PathBuf,
     pub bootstrap_dex_path: PathBuf,
+    pub bootstrap_runtime_dex_path: Option<PathBuf>,
     pub abi_libraries: BTreeMap<String, PathBuf>,
 }
 
@@ -143,6 +145,7 @@ impl PayloadSigningKey {
 pub struct PayloadPackBuildOptions {
     pub output_root: PathBuf,
     pub bootstrap_dex_path: PathBuf,
+    pub bootstrap_runtime_dex_path: Option<PathBuf>,
     pub abi_libraries: BTreeMap<String, PathBuf>,
     pub payload_version: String,
     pub minimum_cli_version: String,
@@ -190,6 +193,13 @@ pub fn build_payload_pack(
         BOOTSTRAP_DEX_FILE.to_string(),
         copy_payload_file(&options.bootstrap_dex_path, &root.join(BOOTSTRAP_DEX_FILE))?,
     );
+    if let Some(runtime_dex_path) = &options.bootstrap_runtime_dex_path {
+        validate_bootstrap_runtime_dex(runtime_dex_path)?;
+        files.insert(
+            BOOTSTRAP_RUNTIME_DEX_FILE.to_string(),
+            copy_payload_file(runtime_dex_path, &root.join(BOOTSTRAP_RUNTIME_DEX_FILE))?,
+        );
+    }
 
     let supported_abis = options.abi_libraries.keys().cloned().collect::<Vec<_>>();
     for (abi, source_library) in &options.abi_libraries {
@@ -271,6 +281,13 @@ fn load_payload_pack_internal(
         )));
     }
     validate_bootstrap_dex(&bootstrap_dex_path)?;
+    let bootstrap_runtime_dex_path = root.join(BOOTSTRAP_RUNTIME_DEX_FILE);
+    let bootstrap_runtime_dex_path = if bootstrap_runtime_dex_path.is_file() {
+        validate_bootstrap_runtime_dex(&bootstrap_runtime_dex_path)?;
+        Some(bootstrap_runtime_dex_path)
+    } else {
+        None
+    };
 
     let mut abi_libraries = BTreeMap::new();
     for abi in &manifest.supported_abis {
@@ -290,6 +307,7 @@ fn load_payload_pack_internal(
         manifest,
         signature_path,
         bootstrap_dex_path,
+        bootstrap_runtime_dex_path,
         abi_libraries,
     })
 }
@@ -318,6 +336,14 @@ fn validate_build_options(options: &PayloadPackBuildOptions) -> Result<(), Paylo
             options.bootstrap_dex_path.display()
         ));
     }
+    if let Some(runtime_dex_path) = &options.bootstrap_runtime_dex_path {
+        if !runtime_dex_path.is_file() {
+            errors.push(format!(
+                "bootstrap runtime DEX does not exist: {}",
+                runtime_dex_path.display()
+            ));
+        }
+    }
 
     for (abi, library) in &options.abi_libraries {
         if !is_supported_abi(abi) {
@@ -340,6 +366,10 @@ fn validate_build_options(options: &PayloadPackBuildOptions) -> Result<(), Paylo
 
 fn validate_bootstrap_dex(path: &Path) -> Result<(), PayloadPackError> {
     validate_magic(path, b"dex\n", "bootstrap DEX")
+}
+
+fn validate_bootstrap_runtime_dex(path: &Path) -> Result<(), PayloadPackError> {
+    validate_magic(path, b"dex\n", "bootstrap runtime DEX")
 }
 
 fn validate_native_library(path: &Path) -> Result<(), PayloadPackError> {
@@ -413,6 +443,19 @@ fn build_payload_sbom(
         sha256: files.get(BOOTSTRAP_DEX_FILE).cloned().unwrap_or_default(),
         license: "LicenseRef-Proprietary".to_string(),
     });
+    if files.contains_key(BOOTSTRAP_RUNTIME_DEX_FILE) {
+        components.push(PayloadSbomComponent {
+            name: "rasp-bootstrap-runtime".to_string(),
+            kind: "android_runtime_dex".to_string(),
+            abi: None,
+            path: BOOTSTRAP_RUNTIME_DEX_FILE.to_string(),
+            sha256: files
+                .get(BOOTSTRAP_RUNTIME_DEX_FILE)
+                .cloned()
+                .unwrap_or_default(),
+            license: "LicenseRef-Proprietary".to_string(),
+        });
+    }
 
     for abi in options.abi_libraries.keys() {
         let path = format!("{abi}/{SECURITY_LIBRARY_NAME}");
@@ -452,7 +495,7 @@ fn build_payload_sbom(
 
 fn payload_license_notice(payload_version: &str) -> String {
     format!(
-        "RASP Shield Android runtime payload\n\nPayload version: {payload_version}\nLicense: LicenseRef-Proprietary\n\nThis payload pack contains RASP Shield bootstrap DEX and native runtime artifacts built from this repository. Add third-party notices here before external distribution.\n"
+        "RASP Shield Android runtime payload\n\nPayload version: {payload_version}\nLicense: LicenseRef-Proprietary\n\nThis payload pack contains RASP Shield bootstrap loader DEX, encrypted-at-insertion runtime DEX, and native runtime artifacts built from this repository. Add third-party notices here before external distribution.\n"
     )
 }
 
@@ -756,8 +799,9 @@ mod tests {
         build_payload_pack, decode_fixed_hex, hex_lower, is_cli_version_compatible, is_hex_sha256,
         load_payload_pack_verified, parse_signature_file, validate_payload_relative_path,
         ParsedVersion, PayloadPackBuildOptions, PayloadSbom, PayloadSigningKey,
-        PayloadVerificationKey, BOOTSTRAP_DEX_FILE, MAX_NATIVE_LIBRARY_BYTES,
-        PAYLOAD_LICENSE_NOTICE_FILE, PAYLOAD_SBOM_FILE, SECURITY_LIBRARY_NAME,
+        PayloadVerificationKey, BOOTSTRAP_DEX_FILE, BOOTSTRAP_RUNTIME_DEX_FILE,
+        MAX_NATIVE_LIBRARY_BYTES, PAYLOAD_LICENSE_NOTICE_FILE, PAYLOAD_SBOM_FILE,
+        SECURITY_LIBRARY_NAME,
     };
     use ed25519_dalek::{Signer, SigningKey};
     use sha2::{Digest, Sha256};
@@ -871,6 +915,7 @@ mod tests {
 
         assert_eq!(pack.manifest.payload_version, "2026.08.05-dev");
         assert!(pack.bootstrap_dex_path.ends_with(BOOTSTRAP_DEX_FILE));
+        assert!(pack.bootstrap_runtime_dex_path.is_none());
         assert!(pack.library_for_abi("arm64-v8a").is_some());
     }
 
@@ -890,6 +935,7 @@ mod tests {
             &PayloadPackBuildOptions {
                 output_root: output_root.clone(),
                 bootstrap_dex_path: bootstrap_path,
+                bootstrap_runtime_dex_path: None,
                 abi_libraries,
                 payload_version: "2026.08.09-dev".to_string(),
                 minimum_cli_version: "0.1.0".to_string(),
@@ -935,6 +981,55 @@ mod tests {
     }
 
     #[test]
+    fn builds_and_verifies_payload_pack_with_runtime_dex() {
+        let source_root = create_temp_dir("build-runtime-sources");
+        let output_root = create_temp_dir("build-runtime-output");
+        let bootstrap_path = source_root.join("classes.dex");
+        let runtime_path = source_root.join("runtime.dex");
+        let library_path = source_root.join("libsecurity.so");
+        fs::write(&bootstrap_path, b"dex\n035\0loader").expect("write bootstrap source");
+        fs::write(&runtime_path, b"dex\n035\0runtime").expect("write runtime source");
+        fs::write(&library_path, b"\x7fELFsecurity library").expect("write native source");
+
+        let signing_key = PayloadSigningKey::from_bytes([14u8; 32]);
+        let report = build_payload_pack(
+            &PayloadPackBuildOptions {
+                output_root: output_root.clone(),
+                bootstrap_dex_path: bootstrap_path,
+                bootstrap_runtime_dex_path: Some(runtime_path),
+                abi_libraries: BTreeMap::from([("arm64-v8a".to_string(), library_path)]),
+                payload_version: "2026.08.09-dev".to_string(),
+                minimum_cli_version: "0.1.0".to_string(),
+                maximum_cli_version: "0.x".to_string(),
+            },
+            &signing_key,
+        )
+        .expect("payload pack should build");
+
+        let verification_key =
+            PayloadVerificationKey::from_hex(&report.payload_signing_public_key_hex)
+                .expect("public key should parse");
+        let pack =
+            load_payload_pack_verified(&output_root, "0.1.0", &verification_key).expect("valid");
+
+        assert!(output_root.join(BOOTSTRAP_RUNTIME_DEX_FILE).is_file());
+        assert!(pack
+            .bootstrap_runtime_dex_path
+            .as_ref()
+            .is_some_and(|path| path.ends_with(BOOTSTRAP_RUNTIME_DEX_FILE)));
+        assert!(pack.manifest.files.contains_key(BOOTSTRAP_RUNTIME_DEX_FILE));
+
+        let sbom: PayloadSbom =
+            serde_json::from_slice(&fs::read(output_root.join(PAYLOAD_SBOM_FILE)).expect("sbom"))
+                .expect("parse sbom");
+        assert!(sbom
+            .components
+            .iter()
+            .any(|component| component.path == BOOTSTRAP_RUNTIME_DEX_FILE
+                && component.kind == "android_runtime_dex"));
+    }
+
+    #[test]
     fn rejects_invalid_build_artifact_magic() {
         let source_root = create_temp_dir("invalid-build-sources");
         let output_root = create_temp_dir("invalid-build-output");
@@ -949,6 +1044,7 @@ mod tests {
             &PayloadPackBuildOptions {
                 output_root,
                 bootstrap_dex_path: bootstrap_path,
+                bootstrap_runtime_dex_path: None,
                 abi_libraries,
                 payload_version: "2026.08.09-dev".to_string(),
                 minimum_cli_version: "0.1.0".to_string(),
@@ -980,6 +1076,7 @@ mod tests {
             &PayloadPackBuildOptions {
                 output_root,
                 bootstrap_dex_path: bootstrap_path,
+                bootstrap_runtime_dex_path: None,
                 abi_libraries,
                 payload_version: "2026.08.09-dev".to_string(),
                 minimum_cli_version: "0.1.0".to_string(),

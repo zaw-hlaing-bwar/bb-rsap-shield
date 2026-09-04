@@ -150,6 +150,8 @@ pub struct ContentProvider {
     pub name: Option<String>,
     pub authorities: Option<String>,
     pub exported: Option<bool>,
+    #[serde(default)]
+    pub metadata: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -380,6 +382,11 @@ pub fn inspect_apk(path: impl AsRef<Path>) -> Result<InspectionResult, InspectEr
                         name: provider.name,
                         authorities: provider.authorities,
                         exported: provider.exported,
+                        metadata: provider
+                            .meta_data
+                            .into_iter()
+                            .filter_map(|entry| Some((entry.name?, entry.value?)))
+                            .collect(),
                     })
                     .collect();
             }
@@ -1415,6 +1422,7 @@ mod tests {
         ApkSignatureScheme, CertificateObservation, ContentProvider, JavascriptBundleFormat,
         ReactNativeEngine,
     };
+    use std::collections::BTreeMap;
 
     #[test]
     fn detects_dex_paths() {
@@ -1483,6 +1491,7 @@ mod tests {
             name: Some("com.rasp.runtime.bootstrap.RaspInitProvider".to_string()),
             authorities: Some("com.example.rasp.12345678".to_string()),
             exported: Some(false),
+            metadata: BTreeMap::new(),
         }];
 
         let markers = detect_exposed_rasp_markers(&entries, &providers);

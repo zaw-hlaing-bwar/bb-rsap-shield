@@ -28,6 +28,7 @@
       "armeabi-v7a/libsecurity.so": "2222222222222222222222222222222222222222222222222222222222222222",
       "x86_64/libsecurity.so": "3333333333333333333333333333333333333333333333333333333333333333",
       "bootstrap.dex": "4444444444444444444444444444444444444444444444444444444444444444",
+      "bootstrap-runtime.dex": "5555555555555555555555555555555555555555555555555555555555555555",
       "sbom.json": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
       "licenses/NOTICE.txt": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
     }

@@ -17,16 +17,18 @@ Gradle, Metro, Flutter, Play signing, or your release pipeline.
   details, DEX/native library inventory, ABI detection, React Native and Flutter
   indicators, signing scheme detection, signing certificate SHA-256 digests, and
   existing security-product markers.
-- APK shielding: injects a bootstrap DEX as the next available `classesN.dex`,
-  injects `libsecurity.so` for each payload ABI, adds a private
-  `ContentProvider`, writes an internal integrity manifest, and removes stale
-  APK signature metadata from the unsigned output.
-- Runtime startup bootstrap: `com.rasp.runtime.bootstrap.RaspInitProvider`
-  loads the native runtime before the host `Application.onCreate()` path.
+- APK shielding: patches and injects a plaintext bootstrap loader DEX as the
+  next available `classesN.dex`, inserts an encrypted secondary runtime DEX
+  asset, injects a native runtime library for each payload ABI, adds a private
+  build-derived `ContentProvider`, writes an internal integrity manifest, and
+  removes stale APK signature metadata from the unsigned output.
+- Runtime startup bootstrap: the injected provider decrypts and loads the
+  secondary runtime DEX, which then loads the native runtime before the host
+  `Application.onCreate()` path.
 - Runtime policy embedding: stores expected package name, expected signing
   certificate digests, payload digests, protected asset digests, APK inventory
   digests, risk thresholds, and runtime monitoring settings inside
-  `assets/rasp-shield/integrity-manifest.json`.
+  a build-derived internal manifest asset referenced from provider metadata.
 - Runtime detection MVP: debugger attachment, Frida/Gum indicators, Frida ports
   and sockets, Xposed/LSPosed/EdXposed, Substrate, Zygisk/Riru/Magisk traces,
   root indicators, emulator indicators, suspicious writable/executable mappings,
@@ -35,8 +37,17 @@ Gradle, Metro, Flutter, Play signing, or your release pipeline.
   self-checksum monitoring.
 - Runtime payload anti-reversing hardening: the native library exports only
   `JNI_OnLoad`, registers JNI methods dynamically, builds with release linker
-  hardening and section garbage collection, and masks common detector/bootstrap
-  marker strings at rest.
+  hardening, section garbage collection, optional arm64 branch protection, and
+  supported compiler hardening flags, injects under a build-derived library
+  name, uses build-derived provider, runtime class, manifest-asset, and runtime
+  asset names, rotates native bootstrap, detector, and bootstrap-loader
+  runtime-binding string encoding keys per shield build, supports optional R8
+  shrinking for the bootstrap DEXes, and masks provider loader metadata, common
+  detector/bootstrap marker strings, native action and report JSON vocabulary,
+  `/proc` paths, JNI signatures, parser formats, runtime-map markers, report
+  taxonomy, and root/emulator static probes at rest with rolling string
+  encodings. Native decode and policy paths also include noinline opaque branch
+  guards to make straightforward static control-flow recovery less useful.
 - Integrity checks: startup package/certificate validation, startup payload
   self-integrity, bounded startup hashing for small protected JavaScript assets,
   deferred monitor hashing for larger JavaScript and Flutter assets, and APK
@@ -162,7 +173,7 @@ export RASP_PAYLOAD_SIGNING_KEY_HEX="$(openssl rand -hex 32)"
 For production releases, follow `docs/payload-signing.md` and store the seed in
 an approved secret manager or protected CI secret.
 
-Build the bootstrap DEX and native runtime from this repository:
+Build the bootstrap loader/runtime DEXes and native runtime from this repository:
 
 ```sh
 bash scripts/build-payload-pack.sh \
@@ -312,10 +323,16 @@ Local signing options:
 
 Injected APK entries:
 
-- `classesN.dex`: bootstrap DEX, where `N` is the next available DEX number.
-- `lib/<abi>/libsecurity.so`: native runtime library for each payload ABI.
-- `assets/rasp-shield/integrity-manifest.json`: internal policy and digest
-  manifest.
+- `classesN.dex`: bootstrap loader DEX, where `N` is the next available DEX number.
+- `assets/r/<build-id-prefix>/d`: encrypted secondary bootstrap runtime DEX.
+  The plaintext provider decrypts and loads this runtime before invoking the
+  native detector.
+- `lib/<abi>/lib<name>.so`: native runtime library for each payload ABI. The
+  payload pack stores this artifact as `<abi>/libsecurity.so`, but shielded APKs
+  receive a build-derived load name recorded as `payload.native_library_name` in
+  the integrity manifest.
+- `assets/r/<build-id-prefix>/m`: internal policy and digest manifest. The
+  provider metadata points the bootstrap at this build-derived asset path.
 
 ### `rasp-cli verify`
 
@@ -334,7 +351,8 @@ Usage: rasp-cli verify [OPTIONS] --input <INPUT>
 Verification checks include APK inspection, ZIP safety, anti-reversing posture
 warnings, JavaScript hardening posture, exposed RASP marker warnings, internal
 integrity manifest presence and metadata consistency, package metadata, private
-bootstrap provider, protected asset digests, bootstrap DEX, native payload
+bootstrap provider, protected asset digests, bootstrap loader/runtime DEX,
+native payload
 libraries, exact payload digest manifest bindings, APK inventory, optional
 Flutter protected assets, and optional signing certificate matching.
 
@@ -375,7 +393,8 @@ Usage: rasp-cli build-payload-pack [OPTIONS] --output <OUTPUT> --bootstrap-dex <
 | Option | Required | Default | Description |
 | --- | --- | --- | --- |
 | `--output <OUTPUT>` | Yes | | Output payload-pack directory. Must not be an existing file. |
-| `--bootstrap-dex <BOOTSTRAP_DEX>` | Yes | | Existing DEX file. Must have DEX magic. |
+| `--bootstrap-dex <BOOTSTRAP_DEX>` | Yes | | Existing plaintext loader DEX file. Must have DEX magic. |
+| `--bootstrap-runtime-dex <BOOTSTRAP_RUNTIME_DEX>` | No | legacy omitted | Existing secondary runtime DEX file. When present, shielding patches, encrypts, and inserts it as an APK asset. |
 | `--native-lib <ABI=PATH>` | Yes, one or more | | Native `libsecurity.so` for an ABI. Repeat for multiple ABIs. ABI must be `arm64-v8a`, `armeabi-v7a`, or `x86_64`. |
 | `--payload-version <PAYLOAD_VERSION>` | Yes | | Payload version written to `manifest.json`. |
 | `--payload-signing-key-env <PAYLOAD_SIGNING_KEY_ENV>` | Yes | | Environment variable name containing a 32-byte Ed25519 signing seed as 64 hex characters. |
@@ -389,6 +408,7 @@ payload-pack/
   manifest.json
   signature.ed25519
   bootstrap.dex
+  bootstrap-runtime.dex
   arm64-v8a/libsecurity.so
   armeabi-v7a/libsecurity.so
   x86_64/libsecurity.so
@@ -397,9 +417,10 @@ payload-pack/
 ```
 
 Only the ABI directories you provide are written. Each native `libsecurity.so`
-must be a valid ELF file no larger than 1.5 MiB. `manifest.json` contains
-SHA-256 digests for every payload file, and `signature.ed25519` signs the raw
-manifest bytes.
+must be a valid ELF file no larger than 1.5 MiB. `bootstrap-runtime.dex` is
+stored plaintext in the signed payload pack, then patched and encrypted when it
+is inserted into an APK. `manifest.json` contains SHA-256 digests for every
+payload file, and `signature.ed25519` signs the raw manifest bytes.
 
 ### `rasp-cli doctor`
 
@@ -424,8 +445,9 @@ Prints CLI, schema, build target, and git commit metadata.
 ## Payload-Pack Build Script
 
 For development payloads, the repository includes
-`scripts/build-payload-pack.sh`. It compiles the Java bootstrap provider with
-`javac`, converts it to DEX with Android SDK `d8`, builds native
+`scripts/build-payload-pack.sh`. It compiles the Java bootstrap provider and
+secondary runtime with `javac`, converts them into separate DEX files with R8
+when available or Android SDK `d8` as a fallback, builds native
 `libsecurity.so` with CMake and the Android NDK, then calls
 `rasp-cli build-payload-pack`.
 
@@ -439,6 +461,11 @@ Usage: scripts/build-payload-pack.sh [options]
 | `--payload-version VERSION` | `0.1.0-dev` | Payload version. |
 | `--abis CSV` | `arm64-v8a` | Comma-separated ABIs to build. Supported: `arm64-v8a`, `armeabi-v7a`, `x86_64`. |
 | `--android-min-sdk API` | `23` | Android API level for `d8` and NDK builds. |
+| `--bootstrap-shrinker MODE` | `auto` | Bootstrap DEX backend: `auto`, `d8`, or `r8`. |
+| `--r8-jar PATH` | omitted | Optional R8 jar used when R8 is selected. |
+| `--dex-protector PATH` | omitted | Executable adapter for protecting the secondary runtime DEX. |
+| `--native-protector PATH` | omitted | Executable adapter for native control-flow protection or virtualization. |
+| `--require-external-protectors` | off | Fail unless both external protector adapters are configured. |
 | `--signing-key-env NAME` | `RASP_PAYLOAD_SIGNING_KEY_HEX` | Environment variable containing a 32-byte Ed25519 signing seed as 64 hex characters. |
 | `--minimum-cli-version VERSION` | omitted | Minimum compatible CLI version. |
 | `--maximum-cli-version VERSION` | omitted | Maximum compatible CLI version. |
@@ -449,11 +476,19 @@ Environment variables accepted by the script:
 - `ANDROID_HOME` or `ANDROID_SDK_ROOT`: Android SDK location.
 - `ANDROID_NDK_HOME`: optional Android NDK location. If omitted, the script
   searches under the SDK.
+- `RASP_BOOTSTRAP_SHRINKER`: bootstrap DEX backend: `auto`, `d8`, or `r8`.
+- `RASP_R8_JAR`: optional path to an R8 jar.
+- `RASP_DEX_PROTECTOR` and `RASP_NATIVE_PROTECTOR`: optional executable
+  adapters for licensed DEX and native protection products.
+- `RASP_REQUIRE_EXTERNAL_PROTECTORS`: set to `1` to make both adapters mandatory.
 - `RASP_PAYLOAD_SIGNING_KEY_HEX`: default payload signing seed variable.
 - `RASP_PAYLOAD_PACK_OUTPUT`, `RASP_PAYLOAD_VERSION`,
   `RASP_PAYLOAD_ABIS`, `RASP_ANDROID_MIN_SDK`,
   `RASP_PAYLOAD_SIGNING_KEY_ENV`, `RASP_PAYLOAD_MINIMUM_CLI_VERSION`, and
   `RASP_PAYLOAD_MAXIMUM_CLI_VERSION`: defaults for matching script options.
+
+The external adapter protocol and compatibility requirements are documented in
+[`docs/external-protectors.md`](docs/external-protectors.md).
 
 ### `rasp-cli verify-payload-pack`
 
@@ -602,6 +637,7 @@ warning-grade checks by default.
 | `anti_reverse.fail_on_debuggable` | `false` | Reject APKs with `android:debuggable="true"`. |
 | `anti_reverse.fail_on_debug_metadata` | `false` | Reject APKs containing source maps, mapping files, symbol files, or similar debug/source metadata entries. |
 | `anti_reverse.fail_on_exposed_rasp_markers` | `false` | Reject APKs that already expose default RASP Shield marker paths, provider names, authorities, or native library names. |
+| `anti_reverse.response_profile` | `CONFIGURED` | Optional anti-tamper response tuning. `CONFIGURED` preserves `risk_policy` exactly. `BALANCED`, `STRICT`, and `LOCKDOWN` progressively lower runtime thresholds, strengthen runtime high-risk response, and tighten monitor scan behavior. Startup signature and payload tampering actions are raised to `TERMINATE` for the opt-in profiles. |
 
 ### `android`
 

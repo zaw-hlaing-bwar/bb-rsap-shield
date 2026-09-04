@@ -19,6 +19,7 @@ const ANDROID_ATTR_NAME: u32 = 0x0101_0003;
 const ANDROID_ATTR_EXPORTED: u32 = 0x0101_0010;
 const ANDROID_ATTR_AUTHORITIES: u32 = 0x0101_0018;
 const ANDROID_ATTR_INIT_ORDER: u32 = 0x0101_001a;
+const ANDROID_ATTR_VALUE: u32 = 0x0101_0024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AxmlError {
@@ -58,6 +59,14 @@ pub struct ProviderDeclaration {
     pub name: Option<String>,
     pub authorities: Option<String>,
     pub exported: Option<bool>,
+    #[serde(default)]
+    pub meta_data: Vec<ProviderMetadataDeclaration>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderMetadataDeclaration {
+    pub name: Option<String>,
+    pub value: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,11 +75,23 @@ pub struct ManifestProvider {
     pub authorities: String,
     pub exported: bool,
     pub init_order: Option<i32>,
+    pub meta_data: Vec<ManifestProviderMetadata>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManifestProviderMetadata {
+    pub name: String,
+    pub value: String,
 }
 
 pub fn bootstrap_provider_authority(package_name: &str, build_id: &str) -> String {
-    let suffix: String = build_id.chars().take(8).collect();
-    format!("{package_name}.rasp.{suffix}")
+    let suffix: String = build_id
+        .chars()
+        .filter(|character| character.is_ascii_hexdigit())
+        .take(12)
+        .map(|character| character.to_ascii_lowercase())
+        .collect();
+    format!("{package_name}.p{suffix}")
 }
 
 pub fn inject_manifest_provider(
@@ -123,6 +144,16 @@ pub fn inject_manifest_provider(
     let name_attr_index = get_or_push_string(&mut strings, "name")?;
     let exported_attr_index = get_or_push_string(&mut strings, "exported")?;
     let authorities_attr_index = get_or_push_string(&mut strings, "authorities")?;
+    let value_attr_index = if provider.meta_data.is_empty() {
+        None
+    } else {
+        Some(get_or_push_string(&mut strings, "value")?)
+    };
+    let meta_data_element_index = if provider.meta_data.is_empty() {
+        None
+    } else {
+        Some(get_or_push_string(&mut strings, "meta-data")?)
+    };
     let init_order_attr_index = if provider.init_order.is_some() {
         Some(get_or_push_string(&mut strings, "initOrder")?)
     } else {
@@ -130,6 +161,13 @@ pub fn inject_manifest_provider(
     };
     let provider_name_index = get_or_push_string(&mut strings, &provider.name)?;
     let provider_authorities_index = get_or_push_string(&mut strings, &provider.authorities)?;
+    let mut provider_meta_data = Vec::with_capacity(provider.meta_data.len());
+    for entry in &provider.meta_data {
+        provider_meta_data.push(ProviderMetadataChunkIndexes {
+            name_value_index: get_or_push_string(&mut strings, &entry.name)?,
+            value_value_index: get_or_push_string(&mut strings, &entry.value)?,
+        });
+    }
 
     let mut resource_ids = resource_map;
     if resource_ids.len() < strings.len() {
@@ -138,6 +176,9 @@ pub fn inject_manifest_provider(
     resource_ids[name_attr_index as usize] = ANDROID_ATTR_NAME;
     resource_ids[exported_attr_index as usize] = ANDROID_ATTR_EXPORTED;
     resource_ids[authorities_attr_index as usize] = ANDROID_ATTR_AUTHORITIES;
+    if let Some(index) = value_attr_index {
+        resource_ids[index as usize] = ANDROID_ATTR_VALUE;
+    }
     if let Some(index) = init_order_attr_index {
         resource_ids[index as usize] = ANDROID_ATTR_INIT_ORDER;
     }
@@ -150,9 +191,12 @@ pub fn inject_manifest_provider(
         name_attr_index,
         exported_attr_index,
         authorities_attr_index,
+        value_attr_index,
         init_order_attr_index,
         provider_name_index,
         provider_authorities_index,
+        meta_data_element_index,
+        meta_data: provider_meta_data,
         exported: provider.exported,
         init_order: provider.init_order,
     })?;
@@ -294,11 +338,23 @@ fn apply_start_element(
             state.manifest.extract_native_libs = attr_bool(&attributes, "extractNativeLibs");
         }
         "provider" => {
+            let provider_index = state.manifest.providers.len();
             state.manifest.providers.push(ProviderDeclaration {
                 name: attr_string(&attributes, "name"),
                 authorities: attr_string(&attributes, "authorities"),
                 exported: attr_bool(&attributes, "exported"),
+                meta_data: Vec::new(),
             });
+            state.next_provider_index = Some(provider_index);
+        }
+        "meta-data" if nearest_provider_index(&state.stack).is_some() => {
+            let provider_index = nearest_provider_index(&state.stack).expect("provider index");
+            if let Some(provider) = state.manifest.providers.get_mut(provider_index) {
+                provider.meta_data.push(ProviderMetadataDeclaration {
+                    name: attr_string(&attributes, "name"),
+                    value: attr_string(&attributes, "value"),
+                });
+            }
         }
         "action"
             if is_inside_intent_filter(&state.stack)
@@ -334,6 +390,7 @@ fn apply_start_element(
     state.stack.push(ElementFrame {
         name: element_name,
         activity,
+        provider_index: state.next_provider_index.take(),
     });
 
     Ok(())
@@ -374,12 +431,14 @@ fn apply_end_element(
 struct ManifestParserState {
     manifest: AndroidManifest,
     stack: Vec<ElementFrame>,
+    next_provider_index: Option<usize>,
 }
 
 #[derive(Debug)]
 struct ElementFrame {
     name: String,
     activity: Option<ActivityCandidate>,
+    provider_index: Option<usize>,
 }
 
 #[derive(Debug)]
@@ -401,6 +460,10 @@ fn nearest_activity_mut(stack: &mut [ElementFrame]) -> Option<&mut ActivityCandi
         .iter_mut()
         .rev()
         .find_map(|frame| frame.activity.as_mut())
+}
+
+fn nearest_provider_index(stack: &[ElementFrame]) -> Option<usize> {
+    stack.iter().rev().find_map(|frame| frame.provider_index)
 }
 
 fn decode_attribute_value(
@@ -625,18 +688,27 @@ struct StringPoolDetails {
     style_data: Vec<u8>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct ProviderChunkIndexes {
     android_namespace_index: u32,
     provider_element_index: u32,
     name_attr_index: u32,
     exported_attr_index: u32,
     authorities_attr_index: u32,
+    value_attr_index: Option<u32>,
     init_order_attr_index: Option<u32>,
     provider_name_index: u32,
     provider_authorities_index: u32,
+    meta_data_element_index: Option<u32>,
+    meta_data: Vec<ProviderMetadataChunkIndexes>,
     exported: bool,
     init_order: Option<i32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ProviderMetadataChunkIndexes {
+    name_value_index: u32,
+    value_value_index: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -663,6 +735,18 @@ fn validate_provider(provider: &ManifestProvider) -> Result<(), AxmlError> {
     }
     if provider.name.contains('\0') || provider.authorities.contains('\0') {
         return Err(AxmlError::Invalid("provider values must not contain NUL"));
+    }
+    for entry in &provider.meta_data {
+        if entry.name.trim().is_empty() {
+            return Err(AxmlError::Invalid(
+                "provider metadata name must not be empty",
+            ));
+        }
+        if entry.name.contains('\0') || entry.value.contains('\0') {
+            return Err(AxmlError::Invalid(
+                "provider metadata values must not contain NUL",
+            ));
+        }
     }
     Ok(())
 }
@@ -1017,6 +1101,54 @@ fn build_provider_chunks(indexes: ProviderChunkIndexes) -> Result<Vec<u8>, AxmlE
             value_data: init_order as u32,
         });
     }
+    let mut output = Vec::new();
+    output.extend_from_slice(&build_start_element_chunk(
+        indexes.provider_element_index,
+        attributes,
+        "provider",
+    )?);
+    if !indexes.meta_data.is_empty() {
+        let meta_data_element_index = indexes.meta_data_element_index.ok_or(AxmlError::Invalid(
+            "provider metadata element index is missing",
+        ))?;
+        let value_attr_index = indexes.value_attr_index.ok_or(AxmlError::Invalid(
+            "provider metadata value attribute is missing",
+        ))?;
+        for metadata in indexes.meta_data {
+            output.extend_from_slice(&build_start_element_chunk(
+                meta_data_element_index,
+                vec![
+                    ProviderAttributeChunk {
+                        resource_id: ANDROID_ATTR_NAME,
+                        namespace_index: indexes.android_namespace_index,
+                        name_index: indexes.name_attr_index,
+                        raw_value_index: metadata.name_value_index,
+                        value_type: TYPE_STRING,
+                        value_data: metadata.name_value_index,
+                    },
+                    ProviderAttributeChunk {
+                        resource_id: ANDROID_ATTR_VALUE,
+                        namespace_index: indexes.android_namespace_index,
+                        name_index: value_attr_index,
+                        raw_value_index: metadata.value_value_index,
+                        value_type: TYPE_STRING,
+                        value_data: metadata.value_value_index,
+                    },
+                ],
+                "provider metadata",
+            )?);
+            output.extend_from_slice(&build_end_element_chunk(meta_data_element_index));
+        }
+    }
+    output.extend_from_slice(&build_end_element_chunk(indexes.provider_element_index));
+    Ok(output)
+}
+
+fn build_start_element_chunk(
+    element_name_index: u32,
+    mut attributes: Vec<ProviderAttributeChunk>,
+    label: &'static str,
+) -> Result<Vec<u8>, AxmlError> {
     attributes.sort_by_key(|attribute| (attribute.resource_id, attribute.name_index));
 
     let start_size = 36usize
@@ -1024,20 +1156,17 @@ fn build_provider_chunks(indexes: ProviderChunkIndexes) -> Result<Vec<u8>, AxmlE
             attributes
                 .len()
                 .checked_mul(20)
-                .ok_or(AxmlError::Invalid("provider attribute size overflow"))?,
+                .ok_or(AxmlError::Invalid("element attribute size overflow"))?,
         )
-        .ok_or(AxmlError::Invalid("provider chunk size overflow"))?;
-    let mut output = Vec::with_capacity(start_size + 24);
+        .ok_or(AxmlError::Invalid(label))?;
+    let mut output = Vec::with_capacity(start_size);
     write_u16(&mut output, RES_XML_START_ELEMENT_TYPE);
     write_u16(&mut output, 16);
-    write_u32(
-        &mut output,
-        to_u32(start_size, "provider start chunk size")?,
-    );
+    write_u32(&mut output, to_u32(start_size, "element start chunk size")?);
     write_u32(&mut output, 0);
     write_u32(&mut output, NO_INDEX);
     write_u32(&mut output, NO_INDEX);
-    write_u32(&mut output, indexes.provider_element_index);
+    write_u32(&mut output, element_name_index);
     write_u16(&mut output, 20);
     write_u16(&mut output, 20);
     write_u16(
@@ -1058,14 +1187,19 @@ fn build_provider_chunks(indexes: ProviderChunkIndexes) -> Result<Vec<u8>, AxmlE
         write_u32(&mut output, attribute.value_data);
     }
 
+    Ok(output)
+}
+
+fn build_end_element_chunk(element_name_index: u32) -> Vec<u8> {
+    let mut output = Vec::with_capacity(24);
     write_u16(&mut output, RES_XML_END_ELEMENT_TYPE);
     write_u16(&mut output, 16);
     write_u32(&mut output, 24);
     write_u32(&mut output, 0);
     write_u32(&mut output, NO_INDEX);
     write_u32(&mut output, NO_INDEX);
-    write_u32(&mut output, indexes.provider_element_index);
-    Ok(output)
+    write_u32(&mut output, element_name_index);
+    output
 }
 
 fn align4(output: &mut Vec<u8>) {
@@ -1166,13 +1300,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn authority_uses_first_eight_build_id_characters() {
+    fn authority_uses_first_twelve_build_id_characters() {
         assert_eq!(
             bootstrap_provider_authority(
                 "com.example.mobile",
-                "a91f30c2-0000-0000-0000-000000000000"
+                "a91f30c2d41e0000000000000000000000000000000000000000000000000000"
             ),
-            "com.example.mobile.rasp.a91f30c2"
+            "com.example.mobile.pa91f30c2d41e"
         );
     }
 
@@ -1191,6 +1325,10 @@ mod tests {
                 name: Some(provider.name),
                 authorities: Some(provider.authorities),
                 exported: Some(false),
+                meta_data: vec![ProviderMetadataDeclaration {
+                    name: Some("ra91f30c2d41e".to_string()),
+                    value: Some("r/a91f30c2d41e/m".to_string()),
+                }],
             }]
         );
     }
@@ -1218,6 +1356,10 @@ mod tests {
         assert_eq!(
             resource_ids[string_index(&strings, "initOrder")],
             ANDROID_ATTR_INIT_ORDER
+        );
+        assert_eq!(
+            resource_ids[string_index(&strings, "value")],
+            ANDROID_ATTR_VALUE
         );
     }
 
@@ -1265,9 +1407,13 @@ mod tests {
     fn test_provider() -> ManifestProvider {
         ManifestProvider {
             name: "com.rasp.runtime.bootstrap.RaspInitProvider".to_string(),
-            authorities: "com.example.mobile.rasp.a91f30c2".to_string(),
+            authorities: "com.example.mobile.pa91f30c2d41e".to_string(),
             exported: false,
             init_order: Some(1000),
+            meta_data: vec![ManifestProviderMetadata {
+                name: "ra91f30c2d41e".to_string(),
+                value: "r/a91f30c2d41e/m".to_string(),
+            }],
         }
     }
 

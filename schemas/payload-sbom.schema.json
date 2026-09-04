@@ -31,7 +31,7 @@
         "name": { "type": "string", "minLength": 1 },
         "kind": {
           "type": "string",
-          "enum": ["android_dex", "native_library", "license_notice"]
+          "enum": ["android_dex", "android_runtime_dex", "native_library", "license_notice"]
         },
         "abi": { "type": "string", "enum": ["arm64-v8a", "armeabi-v7a", "x86_64"] },
         "path": { "type": "string", "minLength": 1 },

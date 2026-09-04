@@ -188,6 +188,18 @@ pub struct AntiReverseHardeningConfig {
     pub fail_on_debug_metadata: bool,
     #[serde(default)]
     pub fail_on_exposed_rasp_markers: bool,
+    #[serde(default)]
+    pub response_profile: AntiTamperResponseProfile,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum AntiTamperResponseProfile {
+    #[default]
+    Configured,
+    Balanced,
+    Strict,
+    Lockdown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -509,7 +521,7 @@ fn default_queue_capacity() -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_valid_env_var_name, parse_config};
+    use super::{is_valid_env_var_name, parse_config, AntiTamperResponseProfile};
 
     const VALID_CONFIG: &str = r#"{
       "schema_version": 1,
@@ -590,7 +602,7 @@ mod tests {
     fn parses_hardening_config() {
         let configured = VALID_CONFIG.replace(
             "\"android\": {",
-            "\"hardening\": { \"javascript\": { \"require_hermes\": true, \"fail_on_plaintext_bundle\": true }, \"anti_reverse\": { \"fail_on_debuggable\": true, \"fail_on_debug_metadata\": true, \"fail_on_exposed_rasp_markers\": true } },\n      \"android\": {",
+            "\"hardening\": { \"javascript\": { \"require_hermes\": true, \"fail_on_plaintext_bundle\": true }, \"anti_reverse\": { \"fail_on_debuggable\": true, \"fail_on_debug_metadata\": true, \"fail_on_exposed_rasp_markers\": true, \"response_profile\": \"STRICT\" } },\n      \"android\": {",
         );
 
         let config = parse_config(&configured).expect("hardening config");
@@ -600,6 +612,10 @@ mod tests {
         assert!(config.hardening.anti_reverse.fail_on_debuggable);
         assert!(config.hardening.anti_reverse.fail_on_debug_metadata);
         assert!(config.hardening.anti_reverse.fail_on_exposed_rasp_markers);
+        assert_eq!(
+            config.hardening.anti_reverse.response_profile,
+            AntiTamperResponseProfile::Strict
+        );
     }
 
     #[test]

@@ -13,7 +13,7 @@ This plan targets Release 1.0 only:
 - Rust CLI and artifact transformation.
 - C/C++ Android native payload built with the Android NDK.
 - Bootstrap through a private Android `ContentProvider`.
-- Precompiled bootstrap DEX injection.
+- Precompiled bootstrap loader DEX injection and encrypted secondary runtime DEX insertion.
 - Local and external signing flows.
 - Static verification, JSON reports, and optional ADB runtime smoke tests.
 
@@ -41,7 +41,7 @@ The critical path is:
 
 1. Inspect APK metadata without mutation.
 2. Validate configuration.
-3. Inject bootstrap DEX and native library placeholders.
+3. Inject bootstrap loader/runtime DEX and native library placeholders.
 4. Inject the manifest provider.
 5. Rebuild, align, sign, and verify the APK.
 6. Replace placeholder payload behavior with real runtime checks.
@@ -216,14 +216,16 @@ Goal: produce a structurally valid transformed APK before implementing all secur
   - Insert bootstrap as the next `classesN.dex`.
   - Reject class-name collision with existing bootstrap package.
 - Implement native library insertion:
-  - Add `lib/arm64-v8a/libsecurity.so`.
+  - Add `lib/<abi>/lib<build-derived-name>.so`.
   - Preserve compression policy based on source APK behavior.
   - Preserve unknown ZIP entries.
 - Implement binary manifest provider injection:
-  - Add `com.rasp.runtime.bootstrap.RaspInitProvider`.
-  - Generate authority as `<package>.rasp.<first-eight-build-id-chars>`.
+  - Add a build-derived provider class generated from the build ID.
+  - Generate authority as `<package>.p<first-twelve-build-id-chars>`.
   - Set exported false.
   - Set init order.
+  - Add provider metadata that points to the build-derived integrity manifest
+    asset path.
   - Avoid intent filters and URI grants.
   - Do not patch `MainApplication.smali`.
 - Generate internal integrity manifest with build ID, protected assets, policy digest, expected certificate digests, app-owned React Native/Flutter asset digests, and APK entry inventory digests.
@@ -232,7 +234,8 @@ Goal: produce a structurally valid transformed APK before implementing all secur
 Exit criteria:
 
 - `rasp-cli shield --signing-mode external` produces an unsigned transformed APK and signing request.
-- Output APK contains bootstrap DEX, provider, native library, and integrity manifest.
+- Output APK contains bootstrap loader DEX, encrypted runtime DEX asset, provider, native library,
+  and integrity manifest.
 - Original resources, assets, DEX files, and unknown entries are preserved.
 
 ## Phase 5: Alignment, Signing, and Verification
@@ -417,26 +420,32 @@ Current status:
 - Signed payload-pack creation is implemented through `rasp-cli build-payload-pack`, including
   DEX/ELF artifact validation, manifest generation, SHA-256 file digests, and Ed25519 signing.
 - Source-based Android payload assembly is implemented through `scripts/build-payload-pack.sh`,
-  which compiles `RaspInitProvider.java` with `javac`/`d8`, builds `libsecurity.so` with the
-  Android NDK through CMake, and emits a verified payload pack.
+  which compiles `RaspInitProvider.java` and `RaspRuntimeEntry.java` into separate loader/runtime
+  DEX files with `javac`/`d8`, builds `libsecurity.so` with the Android NDK through CMake, and
+  emits a verified payload pack.
 - Payload-pack SBOM and license notice artifacts are generated as `sbom.json` and
   `licenses/NOTICE.txt`; both are included in the signed manifest digest inventory and enforced by
   the payload-pack loader.
 - Platform, ABI layout, and CLI version compatibility checks are implemented.
 - `rasp-cli shield --payload-pack` validates payload packs and requires `--payload-signing-public-key-hex` before transformation.
 - Unsigned APK ZIP reconstruction is implemented for the external-signing path.
-- Bootstrap DEX insertion is implemented as the next available `classesN.dex`.
-- Native payload library insertion is implemented under `lib/<abi>/libsecurity.so`.
+- Bootstrap loader DEX insertion is implemented as the next available `classesN.dex`.
+- Secondary bootstrap runtime DEX insertion is implemented as a build-derived encrypted asset under
+  `assets/r/<build-id-prefix>/d`.
+- Native payload library insertion is implemented under a build-derived APK entry name and bound
+  back to the signed payload-pack `libsecurity.so` digest in the integrity manifest.
 - v1 JAR signature metadata is stripped during reconstruction, and v2/v3 signing blocks are discarded by the fresh ZIP rewrite.
 - External signing-request artifact generation is implemented as `<output-stem>.signing-request.json`.
 - External verification-template artifact generation is implemented as `<output-stem>.verification-template.json`.
 - Binary manifest provider injection is implemented for the external-signing path, including
-  `com.rasp.runtime.bootstrap.RaspInitProvider`, generated authority, `exported=false`, and init order.
-- Internal integrity manifest generation is implemented as
-  `assets/rasp-shield/integrity-manifest.json`, including build ID, package metadata, policy digest,
+  a build-derived provider class, generated authority, `exported=false`, init order, and
+  metadata for the build-derived integrity manifest asset path.
+- Internal integrity manifest generation is implemented under a build-derived
+  `assets/r/<build-id-prefix>/m` entry, including build ID, package metadata, policy digest,
   expected certificate digests, provider metadata, payload file digests, and protected asset digests.
-- End-to-end smoke testing confirms the unsigned output contains the injected provider, bootstrap DEX,
-  native payload library, internal integrity manifest, and no detected signing schemes.
+- End-to-end smoke testing confirms the unsigned output contains the injected provider, bootstrap
+  loader DEX, encrypted runtime DEX asset, native payload library, internal integrity manifest, and
+  no detected signing schemes.
 
 ### Milestone 4: Signed and Verified APK
 
@@ -451,8 +460,9 @@ Deliverables:
 Current status:
 
 - Static `rasp-cli verify` is implemented for APK inspection, ZIP safety, bootstrap provider
-  presence, internal integrity manifest parsing, protected asset digest checks, bootstrap DEX
-  presence, native payload library presence, and optional signing certificate SHA-256 matching.
+  presence, internal integrity manifest parsing, protected asset digest checks, bootstrap loader DEX
+  presence, encrypted bootstrap runtime DEX binding, native payload library presence, and optional
+  signing certificate SHA-256 matching.
 - Verification reports now emit `PASS` or `FAIL` with structured input, application, payload,
   signing, check, and warning sections.
 - `zipalign` integration is implemented with `zipalign -P 16 -f -v 4` and verification through
@@ -498,22 +508,41 @@ Current status:
 - Native self-defense now attempts `PR_SET_DUMPABLE=0` where available to reduce ptrace
   attachability, and monitor scans checksum the `libsecurity.so` executable mapping to detect
   post-startup patches to the detector itself.
+- Native build hardening includes hidden visibility, function/data sections with section garbage
+  collection, RELRO/NOW/noexecstack, stack protector, LTO when supported, checked compiler
+  hardening flags, and arm64 branch protection when the Android NDK accepts it.
+- The shield rewrite rotates separate native bootstrap and detector string encoding keys per build
+  ID, applies a rolling native string mask, and patches the runtime class, JNI bootstrap method
+  strings, detector tokens, Java hook class probes, report IDs, categories, static evidence,
+  action reasons, and root/emulator probe paths, properties, and Java build field names before
+  inserting the native library into the APK.
+- The shield rewrite also re-encodes bootstrap-loader runtime-binding strings with a build-derived
+  key and refreshes DEX header hashes after patching provider/runtime class descriptors or encoded
+  loader string markers.
 - The detector computes capped risk as `min(100, sum(active_signal_weights))` and keeps the latest
   report available as JSON.
 - The generated integrity manifest now carries the runtime response policy summary, including
   thresholds, `startup_budget_ms`, `runtime_high_risk_action`, `startup_integrity_action`, and
   `startup_payload_tampering_action`.
+- Hardening response profiles are implemented through `hardening.anti_reverse.response_profile`.
+  `CONFIGURED` preserves explicit `risk_policy`; `BALANCED`, `STRICT`, and `LOCKDOWN`
+  progressively lower thresholds, strengthen runtime high-risk response, and tighten runtime
+  monitor scan cadence.
 - The native payload resolves detector results to `ALLOW`, `REPORT`, `WARN`, `LOCK_STARTUP`, or
   `TERMINATE`, using conservative defaults when policy parsing fails.
-- Bootstrap `RaspInitProvider` Java source now loads `libsecurity.so` and calls the native detector
-  during provider startup, reads the integrity manifest from assets, and applies configured
-  lock-startup or terminate responses.
-- Bootstrap startup duration is measured with Android elapsed realtime, logged against the configured
-  startup budget, and exposed through public status accessors for host-side smoke checks.
+- Bootstrap provider Java source now reads its manifest asset path from provider metadata, verifies
+  and decrypts the secondary runtime DEX, loads the runtime entrypoint, and applies configured
+  lock-startup or terminate responses when loader tampering is detected.
+- Bootstrap runtime Java source loads the configured native library name and calls the native
+  detector during provider startup.
+- Bootstrap startup duration is measured with Android elapsed realtime and logged against the
+  configured startup budget without exposing public diagnostic bridge methods on the plaintext
+  provider.
 - Startup package-name and signing-certificate checks are implemented in the bootstrap provider.
   Mismatches are reported to native as startup integrity signals and default to `TERMINATE`.
-- Startup payload self-integrity checks are implemented for protected bootstrap DEX and native
-  library APK entries. Digest mismatches are reported to native as payload tampering signals.
+- Startup payload self-integrity checks are implemented for protected bootstrap loader DEX,
+  encrypted runtime DEX, and native library APK entries. Digest mismatches are reported to native as
+  payload tampering signals.
 - Startup APK inventory checks are implemented for non-signature ZIP entries and executable
   entry paths. Added or removed APK entries are reported to native as payload tampering signals,
   which catches common repackaging/code-injection attempts such as adding a new `classesN.dex`
@@ -522,7 +551,7 @@ Current status:
 - Large protected JavaScript bundles and Flutter app-owned protected entries are deferred into the
   runtime monitor: normal scans rotate through one deferred asset per interval, and deep scans verify
   all deferred app-owned assets before applying the configured payload tampering action.
-- Runtime monitoring scheduler is implemented in the bootstrap provider. It uses randomized bounded
+- Runtime monitoring scheduler is implemented in the bootstrap runtime. It uses randomized bounded
   intervals from the integrity manifest, can run one immediate confirmation scan on suspicion, and
   skips background scans when `monitor_background_state=false` and lifecycle callbacks are available.
 - Runtime smoke now clears and reads `logcat` around launch and fails the run when the bootstrap
@@ -540,6 +569,22 @@ Current status:
   configured outside the repository.
 - Payload-pack build and load validation rejects native libraries larger than 1.5 MiB per ABI and
   verifies bootstrap/native file magic before accepting a pack.
+- Payload-pack builds validate that the bootstrap loader DEX does not expose sensitive loader
+  metadata, runtime-binding, or fallback policy strings, require source-key encoded loader patch
+  markers, and verify that the stripped native library keeps encoded bootstrap runtime and detector
+  token patch markers, separate bootstrap/detector string key markers, and no plaintext bootstrap
+  runtime class, representative detector tokens, action/report JSON vocabulary, `/proc` paths, JNI
+  signatures, parser formats, runtime-map markers, report strings, or static probe strings. Native
+  decode and policy decisions include noinline opaque branch guards as a source-level control-flow
+  hardening layer.
+- Split-loader bootstrap encryption is implemented: Android loads a tiny plaintext provider from
+  installed DEX at startup, and that provider verifies, decrypts, and loads the secondary Java
+  runtime payload from an encrypted build-derived asset.
+- Fail-closed external protector adapters are implemented for commercial secondary-runtime DEX
+  obfuscation and native control-flow protection or virtualization. Builds validate the protected
+  DEX entry class, ELF format, `JNI_OnLoad` export, native re-key markers, and protected string
+  posture before payload-pack signing. Whole-file native packers that hide the re-key marker region
+  still require a future post-re-key integration stage.
 - Initial `cargo-fuzz` targets are implemented for AXML parsing, provider injection, APK
   inspection, and APK rewrite. `scripts/check.sh` compile-checks the harnesses.
 - Sustained fuzz campaign automation is implemented through `scripts/fuzz-campaign.sh`, including
